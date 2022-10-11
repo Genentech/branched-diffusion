@@ -17,7 +17,7 @@ def generate_continuous_samples(
 ):
 	"""
 	Generates samples from a trained score model and SDE. This first generates a
-	sample from the SDE's prior distribution a t = 1, then steps backward
+	sample from the SDE's prior distribution a `t_limit`, then steps backward
 	through time to generate new data points.
 	Arguments:
 		`model`: a trained score model which takes in x, t and predicts score
@@ -64,9 +64,8 @@ def generate_continuous_samples(
 		x = xt
 		t_iter = tqdm.tqdm(time_steps) if verbose else time_steps
 		for time_step in t_iter:
-			time_step_tens = torch.tensor([time_step], device=DEVICE)
 			branch_index = class_time_to_branch_index(
-				class_tens, time_step_tens
+				class_tens, time_step[None]
 			)[0]
 			t = torch.ones(num_samples).to(DEVICE) * time_step
 			f = sde.drift_coef_func(x, t)
@@ -92,9 +91,8 @@ def generate_continuous_samples(
 		x = xt
 		t_iter = tqdm.tqdm(time_steps) if verbose else time_steps
 		for time_step in t_iter:
-			time_step_tens = torch.tensor([time_step], device=DEVICE)
 			branch_index = class_time_to_branch_index(
-				class_tens, time_step_tens
+				class_tens, time_step[None]
 			)[0]
 			t = torch.ones(num_samples).to(DEVICE) * time_step
 			
@@ -138,7 +136,6 @@ def generate_continuous_samples(
 			x_tens = torch.tensor(x).float().to(DEVICE).view(x_shape)
 			t_tens = torch.ones(num_samples).to(DEVICE) * t
 
-
 			time_step_tens = torch.tensor([t], device=DEVICE)
 			branch_index = class_time_to_branch_index(
 				class_tens, time_step_tens
@@ -162,3 +159,58 @@ def generate_continuous_samples(
 			print("Number of ODE function evaluations: %d" % result.nfev)
 
 		return torch.tensor(result.y[:, -1]).to(DEVICE).reshape(x_shape)
+
+
+def generate_discrete_samples(
+	model, diffuser, class_to_sample, class_time_to_branch_index,
+	num_samples=64, t_start=0, t_limit=1000, initial_samples=None, verbose=False
+):
+	"""
+	Generates samples from a trained score model and discrete diffuser. This
+	first generates a sample from the prior distribution a `t_limit`, then steps
+	backward through time to generate new data points.
+	Arguments:
+		`model`: a trained score model which takes in x, t and predicts score
+		`diffuser`: a DiscreteDiffuser object
+		`class_to_sample`: class to sample from (will be an argument in tensor
+			form to `class_time_to_branch_index`)
+		`class_time_to_branch_index`: function that takes in B-tensors of class
+			and time and maps to a B-tensor of branch indices
+		`num_samples`: number of objects to return
+		`t_start`: last time step to stop at (a smaller positive integer) than
+			`t_limit`
+		`t_limit`: the time step to start generating at (a larger positive
+			integer than `t_start`)
+		`initial_samples`: if given, this is a tensor which contains the samples
+			to start from initially, to be used instead of sampling from the
+			diffuser's defined prior
+		`verbose`: if True, print out progress bar
+	Returns a tensor of size `num_samples` x ...
+	"""
+	# First, sample from the prior distribution at some late time t
+	if initial_samples is not None:
+		xt = initial_samples
+	else:
+		t = (torch.ones(num_samples) * t_limit).to(DEVICE)
+		xt = diffuser.sample_prior(num_samples, t)
+
+	class_tens = torch.tensor([class_to_sample], device=DEVICE)
+	
+	# Disable gradient computation in model
+	torch.set_grad_enabled(False)
+	
+	time_steps = torch.arange(t_limit, t_start, step=-1).to(DEVICE)
+	# (descending order)
+	
+	# Step backward through time starting at xt, simulating the reverse SDE
+	x = xt
+	t_iter = tqdm.tqdm(time_steps) if verbose else time_steps
+	for time_step in t_iter:
+		branch_index = class_time_to_branch_index(
+			class_tens, time_step[None]
+		)[0]
+		t = torch.ones(num_samples).to(DEVICE) * time_step
+		z = model(x, t)[:, branch_index]
+		t = torch.ones(num_samples).to(DEVICE) * time_step
+		xt = diffuser.reverse_step(xt, t, z)
+	return xt

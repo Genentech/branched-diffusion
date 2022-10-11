@@ -13,7 +13,7 @@ class SDE:
 		"""
 		Arguments:
 			`input_shape`: a tuple of ints which is the shape of input tensors
-			x; does not include batch dimension
+				x; does not include batch dimension
 			`seed`: random seed for sampling and running the SDE
 		"""
 		self.input_shape = input_shape
@@ -157,7 +157,8 @@ class VarianceExplodingSDE(SDE):
 			torch.zeros_like(x0), torch.ones_like(x0), generator=self.rng
 		)  # Shape: B x ...
 		
-		variance = (torch.pow(self.sigma, 2 * t) - 1) / (2 * torch.log(self.sigma))
+		variance = (torch.pow(self.sigma, 2 * t) - 1) / \
+			(2 * torch.log(self.sigma))
 		std = self._inflate_dims(torch.sqrt(variance))	# Shape: B x ...		
 		xt = x0 + (std * z)
 		
@@ -177,7 +178,8 @@ class VarianceExplodingSDE(SDE):
 		Returns a B-tensor containing the expected magnitude of the score
 		function at each time `t`.
 		"""
-		variance = (torch.pow(self.sigma, 2 * t) - 1) / (2 * torch.log(self.sigma))
+		variance = (torch.pow(self.sigma, 2 * t) - 1) / \
+			(2 * torch.log(self.sigma))
 		return 1 / variance  # Shape: B
 		
 	def sample_prior(self, num_samples, t):
@@ -191,10 +193,12 @@ class VarianceExplodingSDE(SDE):
 		"""
 		shape = torch.Size([num_samples]) + torch.Size(self.input_shape)
 		z = torch.normal(
-			torch.zeros(shape).to(DEVICE), torch.ones(shape).to(DEVICE), generator=self.rng
+			torch.zeros(shape).to(DEVICE), torch.ones(shape).to(DEVICE),
+			generator=self.rng
 		)  # Shape: B x ...
 		
-		variance = (torch.pow(self.sigma, 2 * t) - 1) / (2 * torch.log(self.sigma))
+		variance = (torch.pow(self.sigma, 2 * t) - 1) / \
+			(2 * torch.log(self.sigma))
 		std = self._inflate_dims(torch.sqrt(variance))	# Shape: B x ...
 		
 		return z * std
@@ -219,7 +223,9 @@ class VariancePreservingSDE(SDE):
 		
 		self.beta_0 = torch.tensor(beta_0).to(DEVICE)
 		self.delta_beta = torch.tensor(beta_1 - beta_0).to(DEVICE)
-		self.string = "Variance Preserving SDE (beta(t) = %.2f + %.2ft)" % (beta_0, beta_1 - beta_0)
+		self.string = "Variance Preserving SDE (beta(t) = %.2f + %.2ft)" % (
+			beta_0, beta_1 - beta_0
+		)
 		
 	def _beta(self, t):
 		"""
@@ -316,7 +322,8 @@ class VariancePreservingSDE(SDE):
 		# We will sample in the limit as t approaches infinity
 		shape = torch.Size([num_samples]) + torch.Size(self.input_shape)
 		return torch.normal(
-			torch.zeros(shape).to(DEVICE), torch.ones(shape).to(DEVICE), generator=self.rng
+			torch.zeros(shape).to(DEVICE), torch.ones(shape).to(DEVICE),
+			generator=self.rng
 		)  # Shape: B x ...
 	
 	def __str__(self):
