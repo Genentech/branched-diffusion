@@ -202,7 +202,7 @@ def generate_discrete_samples(
 	time_steps = torch.arange(t_limit, t_start, step=-1).to(DEVICE)
 	# (descending order)
 	
-	# Step backward through time starting at xt, simulating the reverse SDE
+	# Step backward through time starting at xt
 	x = xt
 	t_iter = tqdm.tqdm(time_steps) if verbose else time_steps
 	for time_step in t_iter:
@@ -210,7 +210,6 @@ def generate_discrete_samples(
 			class_tens, time_step[None]
 		)[0]
 		t = torch.ones(num_samples).to(DEVICE) * time_step
-		z = model(x, t)[:, branch_index]
-		t = torch.ones(num_samples).to(DEVICE) * time_step
+		z = model(xt, t)[:, branch_index]
 		xt = diffuser.reverse_step(xt, t, z)
 	return xt

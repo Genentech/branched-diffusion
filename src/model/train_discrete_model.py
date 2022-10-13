@@ -66,8 +66,8 @@ def train_model(
 			
 			# Sample random times between 1 and t_limit (inclusive)
 			t = torch.randint(
-                t_limit, size=(x0.shape[0],), device=DEVICE
-            ) + 1
+			    t_limit, size=(x0.shape[0],), device=DEVICE
+			) + 1
 
 			# Compute branch indices
 			branch_inds = class_time_to_branch_index(y, t)

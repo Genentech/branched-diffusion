@@ -87,23 +87,21 @@ class DiscreteDiffuser:
 
 class GaussianDiffuser(DiscreteDiffuser):
 
-	def __init__(self, beta_0, beta_1, input_shape, seed=None):
+	def __init__(self, beta_1, delta_beta, input_shape, seed=None):
 		"""
 		Arguments:
-			`beta_0`: beta(0); see below
-			`beta_1`: beta(1); beta(t) will be linearly interpolated
-				between beta(0) and beta(1)
-
+			`beta_1`: beta(1), the first value of beta at t = 1
+			`delta_beta`: beta(t) will be linear with this slope
 			`input_shape`: a tuple of ints which is the shape of input tensors
 				x; does not include batch dimension
 			`seed`: random seed for sampling and running the diffusion process
 		"""
 		super().__init__(input_shape, seed)
 
-		self.beta_0 = torch.tensor(beta_0).to(DEVICE)
-		self.delta_beta = torch.tensor(beta_1 - beta_0).to(DEVICE)
+		self.beta_1 = torch.tensor(beta_1).to(DEVICE)
+		self.delta_beta = torch.tensor(delta_beta).to(DEVICE)
 		self.string = "Gaussian Diffuser (beta(t) = %.2f + %.2ft)" % (
-			beta_0, beta_1 - beta_0
+			beta_1, delta_beta
 		)
 
 	def _beta(self, t):
@@ -113,7 +111,8 @@ class GaussianDiffuser(DiscreteDiffuser):
 			`t`: a B-tensor of times
 		Returns a B-tensor of beta values.
 		"""
-		return self.beta_0 + (self.delta_beta * t)
+		# Subtract 1 from t: when t = 1, beta(t) = beta_1
+		return self.beta_1 + (self.delta_beta * (t - 1))
 		
 	def _alpha(self, t):
 		"""
@@ -132,19 +131,11 @@ class GaussianDiffuser(DiscreteDiffuser):
 		Returns a B-tensor of alpha-bar values.
 		"""
 		max_t = torch.max(t)
-		ranges = torch.tile(
-			torch.arange(1, max_t + 1, device=DEVICE),
-			(t.shape[0], 1)
-		)  # Shape: B x maxT
+		t_range = torch.arange(max_t.int() + 1, device=DEVICE)
+		alphas = self._alpha(t_range)
+		alphas_prod = torch.cumprod(alphas, dim=0)
+		return alphas_prod[t.long()]
 
-		alphas = self._alpha(ranges)
-
-		# Anything that ran over the edge, set to 1
-		mask = ranges > t[:, None]
-		alphas[mask] = 1
-
-		return torch.prod(alphas, dim=1)  # Shape: B
-			
 	def forward(self, x0, t, return_posterior=True):
 		"""
 		Runs diffusion process forward given starting point `x0` and a time `t`.
@@ -194,8 +185,10 @@ class GaussianDiffuser(DiscreteDiffuser):
 		)
 
 		d = xt - (post * self._inflate_dims(beta / torch.sqrt(1 - alpha_bar)))
-		d = d / self._inflate_dims(alpha)
-		return d + (z * self._inflate_dims(torch.sqrt(beta_tilde)))
+		d = d / self._inflate_dims(torch.sqrt(alpha))
+		std = torch.sqrt(beta_tilde)
+		std[t == 1] = 0  # No noise for the last step
+		return d + (z * self._inflate_dims(std))
 		
 	def sample_prior(self, num_samples, t):
 		"""
