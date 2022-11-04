@@ -34,7 +34,7 @@ def config():
 
 @train_ex.command
 def train_model(
-	model, diffuser, data_loader, class_time_to_branch_index, num_epochs,
+	model, diffuser, data_loader, model_type, class_mapper, num_epochs,
 	learning_rate, _run, t_limit=1000
 ):
 	"""
@@ -46,12 +46,19 @@ def train_model(
 		`diffuser`: a DiscreteDiffuser object
 		`data_loader`: a DataLoader object that yields batches of data as
 			tensors in pairs: x, y
+		`model_type`: either "branched" or "labelguided"
+		`class_mapper`: for "branched" model types, a function that takes in
+			B-tensors of class and time and maps to a B-tensor of branch
+			indices; for "labelguided" model types, a function that takes in
+			B-tensors of class and maps to a B-tensor of class indices
 		`class_time_to_branch_index`: function that takes in B-tensors of class
 			and time and maps to a B-tensor of branch indices
 		`num_epochs`: number of epochs to train for
 		`learning_rate`: learning rate to use for training
 		`t_limit`: training will occur between time 1 and `t_limit`
 	"""
+	assert model_type in ("branched", "labelguided")
+
 	run_num = _run._id
 	output_dir = os.path.join(MODEL_DIR, str(run_num))
 
@@ -70,18 +77,25 @@ def train_model(
 			    t_limit, size=(x0.shape[0],), device=DEVICE
 			) + 1
 
-			# Compute branch indices
-			branch_inds = class_time_to_branch_index(y, t)
-			
 			# Run diffusion forward to get xt and the posterior parameter to
 			# predict
 			xt, true_post = diffuser.forward(x0, t)
 			
 			# Get model-predicted posterior parameter
-			pred_post = model(xt, t)
-			
+			if model_type == "branched":
+				pred_post = model(xt, t)
+			else:
+				class_inds = class_mapper(y).long()
+				pred_post = model(xt, t, class_inds)
+
 			# Compute loss
-			loss = model.loss(pred_post, true_post, branch_inds)
+			if model_type == "branched":
+				# Compute branch indices
+				branch_inds = class_mapper(y, t)
+				loss = model.loss(pred_post, true_post, branch_inds)
+			else:
+				loss = model.loss(pred_post, true_post)
+
 			loss_val = loss.item()
 			t_iter.set_description("Loss: %.2f" % loss_val)
 
@@ -113,3 +127,31 @@ def train_model(
 		if os.path.islink(link_path):
 			os.remove(link_path)
 		os.symlink(os.path.basename(model_path), link_path)
+
+
+@train_ex.command
+def train_branched_model(
+	model, diffuser, data_loader, class_time_to_branch_index, num_epochs,
+	learning_rate, _run, t_limit=1
+):
+	"""
+	Wrapper for `train_model`.
+	"""
+	train_model(
+		model, diffuser, data_loader, "branched", class_time_to_branch_index,
+		num_epochs, learning_rate, _run, t_limit=t_limit
+	)
+
+	
+@train_ex.command
+def train_label_guided_model(
+	model, diffuser, data_loader, class_to_class_index, num_epochs, learning_rate,
+	_run, t_limit=1
+):
+	"""
+	Wrapper for `train_model`.
+	"""
+	train_model(
+		model, diffuser, data_loader, "labelguided", class_to_class_index,
+		num_epochs, learning_rate, _run, t_limit=t_limit
+	)

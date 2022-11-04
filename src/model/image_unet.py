@@ -621,3 +621,252 @@ class MultitaskMNISTUNetTimeAdd(torch.nn.Module):
 			squared_error,
 			dim=tuple(range(1, len(squared_error.shape)))
 		))
+
+
+class LabelGuidedMNISTUNetTimeConcat(torch.nn.Module):
+
+	def __init__(
+		self, num_classes, t_limit=1,
+		enc_dims=[32, 64, 128, 256], dec_dims=[32, 64, 128],
+		time_embed_size=32, label_embed_size=32, data_channels=1
+	):
+		"""
+		Initialize a time-dependent U-net for MNIST, where time embeddings are
+		concatenated to image representations.
+		Labels are included as part of the input
+		Arguments:
+			`num_classes`: number of classification tasks possible, C
+			`t_limit`: maximum time horizon
+			`enc_dims`: the number of channels in each encoding layer
+			`dec_dims`: the number of channels in each decoding layer (given in
+				reverse order of usage)
+			`time_embed_size`: size of the time embeddings
+			`label_embed_size`: size of the label embeddings
+			`data_channels`: number of channels in input image
+		"""
+		super().__init__()
+
+		assert len(enc_dims) == 4
+		assert len(dec_dims) == 3
+
+		self.creation_args = locals()
+		del self.creation_args["self"]
+		del self.creation_args["__class__"]
+		self.creation_args = sanitize_sacred_arguments(self.creation_args)
+		
+		self.num_classes = num_classes
+		self.t_limit = t_limit
+
+		# Map labels to embeddings
+		self.label_embedder = torch.nn.Embedding(num_classes, label_embed_size)
+
+		# Encoders: receptive field increases and depth increases
+		self.conv_e1 = torch.nn.Conv2d(
+			data_channels + time_embed_size + label_embed_size, enc_dims[0],
+			kernel_size=3, stride=1, bias=False
+		)
+		self.time_dense_e1 = torch.nn.Linear(2, time_embed_size)
+		self.label_dense_e1 = torch.nn.Linear(
+			label_embed_size, label_embed_size
+		)
+		self.norm_e1 = torch.nn.GroupNorm(4, num_channels=enc_dims[0])
+		
+		self.conv_e2 = torch.nn.Conv2d(
+			enc_dims[0] + time_embed_size + label_embed_size, enc_dims[1],
+			kernel_size=3, stride=2, bias=False
+		)
+		self.time_dense_e2 = torch.nn.Linear(2, time_embed_size)
+		self.label_dense_e2 = torch.nn.Linear(
+			label_embed_size, label_embed_size
+		)
+		self.norm_e2 = torch.nn.GroupNorm(32, num_channels=enc_dims[1])
+
+		self.conv_e3 = torch.nn.Conv2d(
+			enc_dims[1] + time_embed_size + label_embed_size, enc_dims[2],
+			kernel_size=3, stride=2, bias=False
+		)
+		self.time_dense_e3 = torch.nn.Linear(2, time_embed_size)
+		self.label_dense_e3 = torch.nn.Linear(
+			label_embed_size, label_embed_size
+		)
+		self.norm_e3 = torch.nn.GroupNorm(32, num_channels=enc_dims[2])
+		
+		self.conv_e4 = torch.nn.Conv2d(
+			enc_dims[2] + time_embed_size + label_embed_size, enc_dims[3],
+			kernel_size=3, stride=2, bias=False
+		)
+		self.time_dense_e4 = torch.nn.Linear(2, time_embed_size)
+		self.label_dense_e4 = torch.nn.Linear(
+			label_embed_size, label_embed_size
+		)
+		self.norm_e4 = torch.nn.GroupNorm(32, num_channels=enc_dims[3])
+
+		# Decoders: depth decreases		   
+		self.conv_d4 = torch.nn.ConvTranspose2d(
+			enc_dims[3] + time_embed_size + label_embed_size, dec_dims[2], 3,
+			stride=2, bias=False
+		)
+		self.time_dense_d4 = torch.nn.Linear(2, time_embed_size)
+		self.label_dense_d4 = torch.nn.Linear(
+			label_embed_size, label_embed_size
+		)
+		self.norm_d4 = torch.nn.GroupNorm(32, num_channels=dec_dims[2])
+		
+		self.conv_d3 = torch.nn.ConvTranspose2d(
+			dec_dims[2] + enc_dims[2] + time_embed_size + label_embed_size,
+			dec_dims[1], 3, stride=2, output_padding=1, bias=False
+		)
+		self.time_dense_d3 = torch.nn.Linear(2, time_embed_size)
+		self.label_dense_d3 = torch.nn.Linear(
+			label_embed_size, label_embed_size
+		)
+		self.norm_d3 = torch.nn.GroupNorm(32, num_channels=dec_dims[1])
+		
+		self.conv_d2 = torch.nn.ConvTranspose2d(
+			dec_dims[1] + enc_dims[1] + time_embed_size + label_embed_size,
+			dec_dims[0], 3, stride=2, output_padding=1, bias=False
+		)
+		self.time_dense_d2 = torch.nn.Linear(2, time_embed_size)
+		self.label_dense_d2 = torch.nn.Linear(
+			label_embed_size, label_embed_size
+		)
+		self.norm_d2 = torch.nn.GroupNorm(32, num_channels=dec_dims[0])
+		
+		self.conv_d1 = torch.nn.ConvTranspose2d(
+			dec_dims[0] + enc_dims[0], data_channels, 3, stride=1, bias=True
+		)
+
+		# Activation functions
+		self.swish = lambda x: x * torch.sigmoid(x)
+
+	def forward(self, xt, t, label):
+		"""
+		Forward pass of the network.
+		Arguments:
+			`xt`: B x 1 x H x W tensor containing the images to train on
+			`t`: B-tensor containing the times to train the network for each
+				image
+			`label`: B-tensor containing class indices
+		Returns a B x T x 1 x H x W tensor which consists of the prediction.
+		"""
+		# Get the time embeddings for `t`
+		# We embed the time as cos((t/T) * (2pi)) and sin((t/T) * (2pi))
+		time_embed_args = (t[:, None] / self.t_limit) * (2 * np.pi)
+		# Shape: B x 1
+		time_embed = self.swish(
+			torch.cat([
+				torch.sin(time_embed_args), torch.cos(time_embed_args)
+			], dim=1)
+		)
+		# Shape: B x 2
+
+		# Get label embeddings
+		label_embed = self.label_embedder(label)
+		
+		# Encoding
+		enc_1_out = self.swish(self.norm_e1(self.conv_e1(torch.cat([
+			xt,
+			torch.tile(
+				self.time_dense_e1(time_embed)[:, :, None, None],
+				(1, 1) + xt.shape[2:]
+			),
+			torch.tile(
+				self.label_dense_e1(label_embed)[:, :, None, None],
+				(1, 1) + xt.shape[2:]
+			)
+		], dim=1))))
+		enc_2_out = self.swish(self.norm_e2(self.conv_e2(torch.cat([
+			enc_1_out,
+			torch.tile(
+				self.time_dense_e2(time_embed)[:, :, None, None],
+				(1, 1) + enc_1_out.shape[2:]
+			),
+			torch.tile(
+				self.label_dense_e2(label_embed)[:, :, None, None],
+				(1, 1) + enc_1_out.shape[2:]
+			)
+		], dim=1))))
+		enc_3_out = self.swish(self.norm_e3(self.conv_e3(torch.cat([
+			enc_2_out,
+			torch.tile(
+				self.time_dense_e3(time_embed)[:, :, None, None],
+				(1, 1) + enc_2_out.shape[2:]
+			),
+			torch.tile(
+				self.label_dense_e3(label_embed)[:, :, None, None],
+				(1, 1) + enc_2_out.shape[2:]
+			)
+		], dim=1))))
+
+		enc_4_out = self.swish(self.norm_e4(self.conv_e4(torch.cat([
+			enc_3_out,
+			torch.tile(
+				self.time_dense_e4(time_embed)[:, :, None, None],
+				(1, 1) + enc_3_out.shape[2:]
+			),
+			torch.tile(
+				self.label_dense_e4(label_embed)[:, :, None, None],
+				(1, 1) + enc_3_out.shape[2:]
+			)
+		], dim=1))))
+
+		# Decoding
+		dec_4_out = self.swish(self.norm_d4(self.conv_d4(torch.cat([
+			enc_4_out,
+			torch.tile(
+				self.time_dense_d4(time_embed)[:, :, None, None],
+				(1, 1) + enc_4_out.shape[2:]
+			),
+			torch.tile(
+				self.label_dense_d4(label_embed)[:, :, None, None],
+				(1, 1) + enc_4_out.shape[2:]
+			)
+		], dim=1))))
+		dec_3_out = self.swish(self.norm_d3(self.conv_d3(torch.cat([
+			dec_4_out, enc_3_out,
+			torch.tile(
+				self.time_dense_d3(time_embed)[:, :, None, None],
+				(1, 1) + dec_4_out.shape[2:]
+			),
+			torch.tile(
+				self.label_dense_d3(label_embed)[:, :, None, None],
+				(1, 1) + dec_4_out.shape[2:]
+			)
+		], dim=1))))
+		dec_2_out = self.swish(self.norm_d2(self.conv_d2(torch.cat([
+			dec_3_out, enc_2_out,
+			torch.tile(
+				self.time_dense_d2(time_embed)[:, :, None, None],
+				(1, 1) + dec_3_out.shape[2:]
+			),
+			torch.tile(
+				self.label_dense_d2(label_embed)[:, :, None, None],
+				(1, 1) + dec_3_out.shape[2:]
+			)
+		], dim=1))))
+		dec_1_out = self.conv_d1(torch.cat([dec_2_out, enc_1_out], dim=1))
+		
+		return dec_1_out
+	
+	def loss(self, pred_values, true_values, weights=None):
+		"""
+		Computes the loss of the neural network.
+		Arguments:
+			`pred_values`: a B x 1 x H x W tensor of predictions from the
+				network
+			`true_values`: a B x 1 x H x W tensor of true values to predict
+			`weights`: if provided, a tensor broadcastable with B x 1 x H x W to
+				weight the squared error by, prior to summing or averaging
+				across dimensions
+		Returns a scalar loss of mean-squared-error values, summed across the
+		1 x H x W dimensions and averaged across the batch dimension.
+		"""
+		# Compute loss as MSE
+		squared_error = torch.square(true_values - pred_values)
+		if weights is not None:
+			squared_error = squared_error / weights
+			
+		return torch.mean(torch.sum(
+			squared_error,
+			dim=tuple(range(1, len(squared_error.shape)))
+		))

@@ -11,7 +11,7 @@ else:
 
 
 def generate_continuous_samples(
-	model, sde, class_to_sample, class_time_to_branch_index, sampler="em",
+	model, sde, class_to_sample, model_type, class_mapper, sampler="em",
 	num_samples=64, num_steps=500, t_start=0.001, t_limit=1,
 	initial_samples=None, verbose=False
 ):
@@ -23,9 +23,12 @@ def generate_continuous_samples(
 		`model`: a trained score model which takes in x, t and predicts score
 		`sde`: an SDE object
 		`class_to_sample`: class to sample from (will be an argument in tensor
-			form to `class_time_to_branch_index`)
-		`class_time_to_branch_index`: function that takes in B-tensors of class
-			and time and maps to a B-tensor of branch indices
+			form to `class_mapper`)
+		`model_type`: either "branched" or "labelguided"
+		`class_mapper`: for "branched" model types, a function that takes in
+			B-tensors of class and time and maps to a B-tensor of branch
+			indices; for "labelguided" model types, a function that takes in
+			B-tensors of class and maps to a B-tensor of class indices
 		`sampler`: one of "em", "pc", or "ode" for Euler-Maruyama,
 			predictor-corrector, or ordinary differential equation, respectively
 		`num_samples`: number of objects to return
@@ -42,6 +45,8 @@ def generate_continuous_samples(
 			evaluations
 	Returns a tensor of size `num_samples` x ...
 	"""
+	assert model_type in ("branched", "labelguided")
+
 	# First, sample from the prior distribution at some late time t
 	if initial_samples is not None:
 		xt = initial_samples
@@ -49,7 +54,12 @@ def generate_continuous_samples(
 		t = (torch.ones(num_samples) * t_limit).to(DEVICE)
 		xt = sde.sample_prior(num_samples, t)
 
-	class_tens = torch.tensor([class_to_sample], device=DEVICE)
+	if model_type == "branched":
+		class_tens = torch.tensor([class_to_sample], device=DEVICE)
+	else:
+		class_tens = torch.tile(
+			torch.tensor([class_to_sample], device=DEVICE), (num_samples,)
+		)
 	
 	# Disable gradient computation in model
 	torch.set_grad_enabled(False)
@@ -64,17 +74,19 @@ def generate_continuous_samples(
 		x = xt
 		t_iter = tqdm.tqdm(time_steps) if verbose else time_steps
 		for time_step in t_iter:
-			branch_index = class_time_to_branch_index(
-				class_tens, time_step[None]
-			)[0]
 			t = torch.ones(num_samples).to(DEVICE) * time_step
 			f = sde.drift_coef_func(x, t)
 			g = sde.diff_coef_func(x, t)
 			dw = torch.randn_like(x)
+
+			if model_type == "branched":
+				branch_index = class_mapper(class_tens, time_step[None])[0]
+				score = model(x, t, [branch_index])[:, 0]
+			else:
+				class_index = class_mapper(class_tens).long()
+				score = model(x, t, class_index)
 			
-			drift = (
-				f - (torch.square(g) * model(x, t, [branch_index])[:, 0])
-			) * step_size
+			drift = (f - (torch.square(g) * score)) * step_size
 			diff = g * torch.sqrt(step_size) * dw
 			
 			mean_x = x - drift	# Subtract because step size is really negative
@@ -91,14 +103,16 @@ def generate_continuous_samples(
 		x = xt
 		t_iter = tqdm.tqdm(time_steps) if verbose else time_steps
 		for time_step in t_iter:
-			branch_index = class_time_to_branch_index(
-				class_tens, time_step[None]
-			)[0]
-			t = torch.ones(num_samples).to(DEVICE) * time_step
-			
+			t = torch.ones(num_samples).to(DEVICE) * time_step\
+
 			# Take Langevin MCMC step
-			score = model(x, t, [branch_index])[:, 0]
-			
+			if model_type == "branched":
+				branch_index = class_mapper(class_tens, time_step[None])[0]
+				score = model(x, t, [branch_index])[:, 0]
+			else:
+				class_index = class_mapper(class_tens).long()
+				score = model(x, t, class_index)
+
 			snr = 0.1
 			score_norm = torch.mean(
 				torch.norm(score.reshape(score.shape[0], -1), dim=-1)
@@ -114,10 +128,13 @@ def generate_continuous_samples(
 			f = sde.drift_coef_func(x, t)
 			g = sde.diff_coef_func(x, t)
 			dw = torch.randn_like(x)
+
+			if model_type == "branched":
+				score = model(x, t, [branch_index])[:, 0]
+			else:
+				score = model(x, t, class_index)
 			
-			drift = (
-				f - (torch.square(g) * model(x, t, [branch_index])[:, 0])
-			) * step_size
+			drift = (f - (torch.square(g) * score)) * step_size
 			diff = g * torch.sqrt(step_size) * dw
 			
 			mean_x = x - drift	# Subtract because step size is really negative
@@ -137,11 +154,14 @@ def generate_continuous_samples(
 			t_tens = torch.ones(num_samples).to(DEVICE) * t
 
 			time_step_tens = torch.tensor([t], device=DEVICE)
-			branch_index = class_time_to_branch_index(
-				class_tens, time_step_tens
-			)[0]
 			
-			score_tens = model(x_tens, t_tens, [branch_index])[:, 0]
+			if model_type == "branched":
+				branch_index = class_mapper(class_tens, time_step_tens)[0]
+				score_tens = model(x_tens, t_tens, [branch_index])[:, 0]
+			else:
+				class_index = class_mapper(class_tens).long()
+				score_tens = model(x_tens, t_tens, class_index)
+
 			f_tens = sde.drift_coef_func(x_tens, t_tens)
 			g_tens = sde.diff_coef_func(x_tens, t_tens)
 			
@@ -161,9 +181,41 @@ def generate_continuous_samples(
 		return torch.tensor(result.y[:, -1]).to(DEVICE).reshape(x_shape)
 
 
+def generate_continuous_branched_samples(
+	model, sde, class_to_sample, class_time_to_branch_index, sampler="em",
+	num_samples=64, num_steps=500, t_start=0.001, t_limit=1,
+	initial_samples=None, verbose=False
+):
+	"""
+	Wrapper for `generate_continuous_samples`.
+	"""
+	return generate_continuous_samples(
+		model, sde, class_to_sample, "branched", class_time_to_branch_index,
+		sampler=sampler, num_samples=num_samples, num_steps=num_steps,
+		t_start=t_start, t_limit=t_limit, initial_samples=initial_samples,
+		verbose=verbose
+	)
+
+
+def generate_continuous_label_guided_samples(
+	model, sde, class_to_sample, class_to_class_index, sampler="em",
+	num_samples=64, num_steps=500, t_start=0.001, t_limit=1,
+	initial_samples=None, verbose=False
+):
+	"""
+	Wrapper for `generate_continuous_samples`.
+	"""
+	return generate_continuous_samples(
+		model, sde, class_to_sample, "labelguided", class_to_class_index,
+		sampler=sampler, num_samples=num_samples, num_steps=num_steps,
+		t_start=t_start, t_limit=t_limit, initial_samples=initial_samples,
+		verbose=verbose
+	)
+
+
 def generate_discrete_samples(
-	model, diffuser, class_to_sample, class_time_to_branch_index,
-	num_samples=64, t_start=0, t_limit=1000, initial_samples=None, verbose=False
+	model, diffuser, class_to_sample, model_type, class_mapper, num_samples=64,
+	t_start=0, t_limit=1000, initial_samples=None, verbose=False
 ):
 	"""
 	Generates samples from a trained score model and discrete diffuser. This
@@ -174,8 +226,11 @@ def generate_discrete_samples(
 		`diffuser`: a DiscreteDiffuser object
 		`class_to_sample`: class to sample from (will be an argument in tensor
 			form to `class_time_to_branch_index`)
-		`class_time_to_branch_index`: function that takes in B-tensors of class
-			and time and maps to a B-tensor of branch indices
+		`model_type`: either "branched" or "labelguided"
+		`class_mapper`: for "branched" model types, a function that takes in
+			B-tensors of class and time and maps to a B-tensor of branch
+			indices; for "labelguided" model types, a function that takes in
+			B-tensors of class and maps to a B-tensor of class indices
 		`num_samples`: number of objects to return
 		`t_start`: last time step to stop at (a smaller positive integer) than
 			`t_limit`
@@ -187,6 +242,8 @@ def generate_discrete_samples(
 		`verbose`: if True, print out progress bar
 	Returns a tensor of size `num_samples` x ...
 	"""
+	assert model_type in ("branched", "labelguided")
+
 	# First, sample from the prior distribution at some late time t
 	if initial_samples is not None:
 		xt = initial_samples
@@ -194,7 +251,12 @@ def generate_discrete_samples(
 		t = (torch.ones(num_samples) * t_limit).to(DEVICE)
 		xt = diffuser.sample_prior(num_samples, t)
 
-	class_tens = torch.tensor([class_to_sample], device=DEVICE)
+	if model_type == "branched":
+		class_tens = torch.tensor([class_to_sample], device=DEVICE)
+	else:
+		class_tens = torch.tile(
+			torch.tensor([class_to_sample], device=DEVICE), (num_samples,)
+		)
 	
 	# Disable gradient computation in model
 	torch.set_grad_enabled(False)
@@ -206,10 +268,43 @@ def generate_discrete_samples(
 	x = xt
 	t_iter = tqdm.tqdm(time_steps) if verbose else time_steps
 	for time_step in t_iter:
-		branch_index = class_time_to_branch_index(
-			class_tens, time_step[None]
-		)[0]
 		t = torch.ones(num_samples).to(DEVICE) * time_step
-		z = model(xt, t, branch_index)[:, 0]
-		xt = diffuser.reverse_step(xt, t, z)
-	return xt
+
+		if model_type == "branched":
+			branch_index = class_mapper(class_tens, time_step[None])[0]
+			z = model(x, t)[:, branch_index]
+		else:
+			class_index = class_mapper(class_tens).long()
+			z = model(x, t, class_index)
+
+		x = diffuser.reverse_step(x, t, z)
+	return x
+
+
+def generate_discrete_branched_samples(
+	model, diffuser, class_to_sample, class_time_to_branch_index,
+	num_samples=64, t_start=0, t_limit=1000, initial_samples=None, verbose=False
+):
+	"""
+	Wrapper for `generate_discrete_samples`.
+	"""
+	return generate_discrete_samples(
+		model, diffuser, class_to_sample, "branched",
+		class_time_to_branch_index,
+		num_samples=num_samples,  t_start=t_start, t_limit=t_limit,
+		initial_samples=initial_samples, verbose=verbose
+	)
+
+
+def generate_discrete_label_guided_samples(
+	model, diffuser, class_to_sample, class_to_class_index,
+	num_samples=64, t_start=0, t_limit=1000, initial_samples=None, verbose=False
+):
+	"""
+	Wrapper for `generate_discrete_samples`.
+	"""
+	return generate_discrete_samples(
+		model, diffuser, class_to_sample, "labelguided", class_to_class_index,
+		num_samples=num_samples,  t_start=t_start, t_limit=t_limit,
+		initial_samples=initial_samples, verbose=verbose
+	)
