@@ -38,10 +38,11 @@ def train_model(
 	learning_rate, _run, t_limit=1000
 ):
 	"""
-	Trains a diffusion model using the given instantiated model and SDE object.
+	Trains a diffusion model using the given instantiated model and discrete
+	diffuser object.
 	Arguments:
-		`model`: an instantiated score model which takes in x, t and predicts
-			score
+		`model`: an instantiated model which takes in x, t and predicts a
+			posterior
 		`diffuser`: a DiscreteDiffuser object
 		`data_loader`: a DataLoader object that yields batches of data as
 			tensors in pairs: x, y

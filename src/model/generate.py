@@ -73,7 +73,7 @@ def generate_continuous_samples(
 			dw = torch.randn_like(x)
 			
 			drift = (
-				f - (torch.square(g) * model(x, t)[:, branch_index])
+				f - (torch.square(g) * model(x, t, [branch_index])[:, 0])
 			) * step_size
 			diff = g * torch.sqrt(step_size) * dw
 			
@@ -97,7 +97,7 @@ def generate_continuous_samples(
 			t = torch.ones(num_samples).to(DEVICE) * time_step
 			
 			# Take Langevin MCMC step
-			score = model(x, t)[:, branch_index]
+			score = model(x, t, [branch_index])[:, 0]
 			
 			snr = 0.1
 			score_norm = torch.mean(
@@ -116,7 +116,7 @@ def generate_continuous_samples(
 			dw = torch.randn_like(x)
 			
 			drift = (
-				f - (torch.square(g) * model(x, t)[:, branch_index])
+				f - (torch.square(g) * model(x, t, [branch_index])[:, 0])
 			) * step_size
 			diff = g * torch.sqrt(step_size) * dw
 			
@@ -141,7 +141,7 @@ def generate_continuous_samples(
 				class_tens, time_step_tens
 			)[0]
 			
-			score_tens = model(x_tens, t_tens)[:, branch_index]
+			score_tens = model(x_tens, t_tens, [branch_index])[:, 0]
 			f_tens = sde.drift_coef_func(x_tens, t_tens)
 			g_tens = sde.diff_coef_func(x_tens, t_tens)
 			
@@ -210,6 +210,6 @@ def generate_discrete_samples(
 			class_tens, time_step[None]
 		)[0]
 		t = torch.ones(num_samples).to(DEVICE) * time_step
-		z = model(xt, t)[:, branch_index]
+		z = model(xt, t, branch_index)[:, 0]
 		xt = diffuser.reverse_step(xt, t, z)
 	return xt

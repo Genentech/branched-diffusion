@@ -116,7 +116,7 @@ class GaussianDiffuser(DiscreteDiffuser):
 		
 	def _alpha(self, t):
 		"""
-		Computes alpha(t)
+		Computes alpha(t).
 		Arguments:
 			`t`: a B-tensor of times
 		Returns a B-tensor of alpha values.
@@ -125,7 +125,7 @@ class GaussianDiffuser(DiscreteDiffuser):
 	
 	def _alpha_bar(self, t):
 		"""
-		Computes alpha-bar(t):
+		Computes alpha-bar(t).
 		Arguments:
 			`t`: a B-tensor of times
 		Returns a B-tensor of alpha-bar values.

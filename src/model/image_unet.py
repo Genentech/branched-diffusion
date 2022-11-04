@@ -156,13 +156,16 @@ class MultitaskMNISTUNetTimeConcat(torch.nn.Module):
 		# Activation functions
 		self.swish = lambda x: x * torch.sigmoid(x)
 
-	def forward(self, xt, t):
+	def forward(self, xt, t, task_inds=None):
 		"""
 		Forward pass of the network.
 		Arguments:
 			`xt`: B x 1 x H x W tensor containing the images to train on
 			`t`: B-tensor containing the times to train the network for each
 				image
+			`task_inds`: an iterable of task indices to generate predictions
+				for; if specified, the output tensor will be
+				B x `len(task_inds)` x 1 x H x W instead of B x T x 1 x H x W
 		Returns a B x T x 1 x H x W tensor which consists of the prediction.
 		"""
 		# Get the time embeddings for `t`
@@ -175,110 +178,116 @@ class MultitaskMNISTUNetTimeConcat(torch.nn.Module):
 			], dim=1)
 		)
 		# Shape: B x 2
-
-		layer_to_iter = lambda layer_i: (
-			[0] * self.num_tasks if self.shared_layers[layer_i] else
-			range(self.num_tasks)
-		)
+		
+		if task_inds is None:
+			layer_to_iter = lambda layer_i: (
+				enumerate([0] * self.num_tasks) if self.shared_layers[layer_i]
+				else enumerate(range(self.num_tasks))
+			)
+		else:
+			layer_to_iter = lambda layer_i: (
+				enumerate([0] * len(task_inds)) if self.shared_layers[layer_i]
+				else enumerate(task_inds)
+			)
 		
 		# Encoding
 		enc_1_outs = [
-			self.swish(self.norm_e1_tasks[i](self.conv_e1_tasks[i](
+			self.swish(self.norm_e1_tasks[l_i](self.conv_e1_tasks[l_i](
 				torch.cat([
 					xt,
 					torch.tile(
-						self.time_dense_e1_tasks[i](
+						self.time_dense_e1_tasks[l_i](
 							time_embed
 						)[:, :, None, None],
 						(1, 1) + xt.shape[2:]
 					)
 				], dim=1)
-			))) for i in layer_to_iter(0)
+			))) for o_i, l_i in layer_to_iter(0)
 		]
 		enc_2_outs = [
-			self.swish(self.norm_e2_tasks[i](self.conv_e2_tasks[i](
+			self.swish(self.norm_e2_tasks[l_i](self.conv_e2_tasks[l_i](
 				torch.cat([
-					enc_1_outs[i],
+					enc_1_outs[o_i],
 					torch.tile(
-						self.time_dense_e2_tasks[i](
+						self.time_dense_e2_tasks[l_i](
 							time_embed
 						)[:, :, None, None],
-						(1, 1) + enc_1_outs[i].shape[2:]
+						(1, 1) + enc_1_outs[o_i].shape[2:]
 					)
 				], dim=1)
-			))) for i in layer_to_iter(1)
+			))) for o_i, l_i in layer_to_iter(1)
 		]
 		enc_3_outs = [
-			self.swish(self.norm_e3_tasks[i](self.conv_e3_tasks[i](
+			self.swish(self.norm_e3_tasks[l_i](self.conv_e3_tasks[l_i](
 				torch.cat([
-					enc_2_outs[i],
+					enc_2_outs[o_i],
 					torch.tile(
-						self.time_dense_e3_tasks[i](
+						self.time_dense_e3_tasks[l_i](
 							time_embed
 						)[:, :, None, None],
-						(1, 1) + enc_2_outs[i].shape[2:]
+						(1, 1) + enc_2_outs[o_i].shape[2:]
 					)
 				], dim=1)
-			))) for i in layer_to_iter(2)
+			))) for o_i, l_i in layer_to_iter(2)
 		]
 		enc_4_outs = [
-			self.swish(self.norm_e4_tasks[i](self.conv_e4_tasks[i](
+			self.swish(self.norm_e4_tasks[l_i](self.conv_e4_tasks[l_i](
 				torch.cat([
-					enc_3_outs[i],
+					enc_3_outs[o_i],
 					torch.tile(
-						self.time_dense_e4_tasks[i](
+						self.time_dense_e4_tasks[l_i](
 							time_embed
 						)[:, :, None, None],
-						(1, 1) + enc_3_outs[i].shape[2:]
+						(1, 1) + enc_3_outs[o_i].shape[2:]
 					)
 				], dim=1)
-			))) for i in layer_to_iter(3)
+			))) for o_i, l_i in layer_to_iter(3)
 		]
 		
 		# Decoding
 		dec_4_outs = [
-			self.swish(self.norm_d4_tasks[i](self.conv_d4_tasks[i](
+			self.swish(self.norm_d4_tasks[l_i](self.conv_d4_tasks[l_i](
 				torch.cat([
-					enc_4_outs[i],
+					enc_4_outs[o_i],
 					torch.tile(
-						self.time_dense_d4_tasks[i](
+						self.time_dense_d4_tasks[l_i](
 							time_embed
 						)[:, :, None, None],
-						(1, 1) + enc_4_outs[i].shape[2:]
+						(1, 1) + enc_4_outs[o_i].shape[2:]
 					)
 				], dim=1)
-			))) for i in layer_to_iter(4)
+			))) for o_i, l_i in layer_to_iter(4)
 		]
 		dec_3_outs = [
-			self.swish(self.norm_d3_tasks[i](self.conv_d3_tasks[i](
+			self.swish(self.norm_d3_tasks[l_i](self.conv_d3_tasks[l_i](
 				torch.cat([
-					dec_4_outs[i], enc_3_outs[i],
+					dec_4_outs[o_i], enc_3_outs[o_i],
 					torch.tile(
-						self.time_dense_d3_tasks[i](
+						self.time_dense_d3_tasks[l_i](
 							time_embed
 						)[:, :, None, None],
-						(1, 1) + dec_4_outs[i].shape[2:]
+						(1, 1) + dec_4_outs[o_i].shape[2:]
 					)
 				], dim=1)
-			))) for i in layer_to_iter(5)
+			))) for o_i, l_i in layer_to_iter(5)
 		]
 		dec_2_outs = [
-			self.swish(self.norm_d2_tasks[i](self.conv_d2_tasks[i](
+			self.swish(self.norm_d2_tasks[l_i](self.conv_d2_tasks[l_i](
 				torch.cat([
-					dec_3_outs[i], enc_2_outs[i],
+					dec_3_outs[o_i], enc_2_outs[o_i],
 					torch.tile(
-						self.time_dense_d2_tasks[i](
+						self.time_dense_d2_tasks[l_i](
 							time_embed
 						)[:, :, None, None],
-						(1, 1) + dec_3_outs[i].shape[2:]
+						(1, 1) + dec_3_outs[o_i].shape[2:]
 					)
 				], dim=1)
-			))) for i in layer_to_iter(6)
+			))) for o_i, l_i in layer_to_iter(6)
 		]
 		dec_1_out = [
-			self.conv_d1_tasks[i](
-				torch.cat([dec_2_outs[i], enc_1_outs[i]], dim=1)
-			) for i in layer_to_iter(7)
+			self.conv_d1_tasks[l_i](
+				torch.cat([dec_2_outs[o_i], enc_1_outs[o_i]], dim=1)
+			) for o_i, l_i in layer_to_iter(7)
 		]
 		dec_1_out = torch.stack(dec_1_out, dim=1)  # Shape: B x T x 1 x H x W
 		
@@ -325,7 +334,7 @@ class MultitaskMNISTUNetTimeAdd(torch.nn.Module):
 	):
 		"""
 		Initialize a time-dependent U-net for MNIST, where time embeddings are
-		concatenated to image representations.
+		added to image representations.
 		Arguments:
 			`num_tasks`: number of tasks to output, T
 			`t_limit`: maximum time horizon
@@ -486,13 +495,16 @@ class MultitaskMNISTUNetTimeAdd(torch.nn.Module):
 		# Activation functions
 		self.swish = lambda x: x * torch.sigmoid(x)
 
-	def forward(self, xt, t):
+	def forward(self, xt, t, task_inds=None):
 		"""
 		Forward pass of the network.
 		Arguments:
 			`xt`: B x 1 x H x W tensor containing the images to train on
 			`t`: B-tensor containing the times to train the network for each
 				image
+			`task_inds`: an iterable of task indices to generate predictions
+				for; if specified, the output tensor will be
+				B x `len(task_inds)` x 1 x H x W instead of B x T x 1 x H x W
 		Returns a B x T x 1 x H x W tensor which consists of the prediction.
 		"""
 		# Get the time embeddings for `t`
@@ -510,66 +522,72 @@ class MultitaskMNISTUNetTimeAdd(torch.nn.Module):
 		else:
 			time_embed = self.swish(time_embed)
 		# Shape: B x E
-
-		layer_to_iter = lambda layer_i: (
-			[0] * self.num_tasks if self.shared_layers[layer_i] else
-			range(self.num_tasks)
-		)
 		
+		if task_inds is None:
+			layer_to_iter = lambda layer_i: (
+				enumerate([0] * self.num_tasks) if self.shared_layers[layer_i]
+				else enumerate(range(self.num_tasks))
+			)
+		else:
+			layer_to_iter = lambda layer_i: (
+				enumerate([0] * len(task_inds)) if self.shared_layers[layer_i]
+				else enumerate(task_inds)
+			)
+
 		# Encoding
 		enc_1_outs = [
-			self.swish(self.norm_e1_tasks[i](
-				self.conv_e1_tasks[i](xt) +
-				self.time_dense_e1_tasks[i](time_embed)[:, :, None, None]
-			)) for i in layer_to_iter(0)
+			self.swish(self.norm_e1_tasks[l_i](
+				self.conv_e1_tasks[l_i](xt) +
+				self.time_dense_e1_tasks[l_i](time_embed)[:, :, None, None]
+			)) for o_i, l_i in layer_to_iter(0)
 		]
 		enc_2_outs = [
-			self.swish(self.norm_e2_tasks[i](
-				self.conv_e2_tasks[i](enc_1_outs[i]) +
-				self.time_dense_e2_tasks[i](time_embed)[:, :, None, None]
-			)) for i in layer_to_iter(1)
+			self.swish(self.norm_e2_tasks[l_i](
+				self.conv_e2_tasks[l_i](enc_1_outs[o_i]) +
+				self.time_dense_e2_tasks[l_i](time_embed)[:, :, None, None]
+			)) for o_i, l_i in layer_to_iter(1)
 		]
 		enc_3_outs = [
-			self.swish(self.norm_e3_tasks[i](
-				self.conv_e3_tasks[i](enc_2_outs[i]) +
-				self.time_dense_e3_tasks[i](time_embed)[:, :, None, None]
-			)) for i in layer_to_iter(2)
+			self.swish(self.norm_e3_tasks[l_i](
+				self.conv_e3_tasks[l_i](enc_2_outs[o_i]) +
+				self.time_dense_e3_tasks[l_i](time_embed)[:, :, None, None]
+			)) for o_i, l_i in layer_to_iter(2)
 		]
 		enc_4_outs = [
-			self.swish(self.norm_e4_tasks[i](
-				self.conv_e4_tasks[i](enc_3_outs[i]) +
-				self.time_dense_e4_tasks[i](time_embed)[:, :, None, None]
-			)) for i in layer_to_iter(3)
+			self.swish(self.norm_e4_tasks[l_i](
+				self.conv_e4_tasks[l_i](enc_3_outs[o_i]) +
+				self.time_dense_e4_tasks[l_i](time_embed)[:, :, None, None]
+			)) for o_i, l_i in layer_to_iter(3)
 		]
 		
 		# Decoding
 		dec_4_outs = [
-			self.swish(self.norm_d4_tasks[i](
-				self.conv_d4_tasks[i](enc_4_outs[i]) +
-				self.time_dense_d4_tasks[i](time_embed)[:, :, None, None]
-			)) for i in layer_to_iter(4)
+			self.swish(self.norm_d4_tasks[l_i](
+				self.conv_d4_tasks[l_i](enc_4_outs[o_i]) +
+				self.time_dense_d4_tasks[l_i](time_embed)[:, :, None, None]
+			)) for o_i, l_i in layer_to_iter(4)
 		]
 		dec_3_outs = [
-			self.swish(self.norm_d3_tasks[i](
-				self.conv_d3_tasks[i](
-					torch.cat([dec_4_outs[i], enc_3_outs[i]], dim=1)
+			self.swish(self.norm_d3_tasks[l_i](
+				self.conv_d3_tasks[l_i](
+					torch.cat([dec_4_outs[o_i], enc_3_outs[o_i]], dim=1)
 				) +
-				self.time_dense_d3_tasks[i](time_embed)[:, :, None, None]
-			)) for i in layer_to_iter(5)
+				self.time_dense_d3_tasks[l_i](time_embed)[:, :, None, None]
+			)) for o_i, l_i in layer_to_iter(5)
 		]
 		dec_2_outs = [
-			self.swish(self.norm_d2_tasks[i](
-				self.conv_d2_tasks[i](
-					torch.cat([dec_3_outs[i], enc_2_outs[i]], dim=1)
+			self.swish(self.norm_d2_tasks[l_i](
+				self.conv_d2_tasks[l_i](
+					torch.cat([dec_3_outs[o_i], enc_2_outs[o_i]], dim=1)
 				) +
-				self.time_dense_d2_tasks[i](time_embed)[:, :, None, None]
-			)) for i in layer_to_iter(6)
+				self.time_dense_d2_tasks[l_i](time_embed)[:, :, None, None]
+			)) for o_i, l_i in layer_to_iter(6)
 		]
 		dec_1_out = [
-			self.conv_d1_tasks[i](
-				torch.cat([dec_2_outs[i], enc_1_outs[i]], dim=1)
+			self.conv_d1_tasks[l_i](
+				torch.cat([dec_2_outs[o_i], enc_1_outs[o_i]], dim=1)
 			)
-			for i in layer_to_iter(7)
+			for o_i, l_i in layer_to_iter(7)
 		]
 		dec_1_out = torch.stack(dec_1_out, dim=1)  # Shape: B x T x 1 x H x W
 		
