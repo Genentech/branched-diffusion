@@ -284,12 +284,12 @@ class MultitaskMNISTUNetTimeConcat(torch.nn.Module):
 				], dim=1)
 			))) for o_i, l_i in layer_to_iter(6)
 		]
-		dec_1_out = [
+		dec_1_outs = [
 			self.conv_d1_tasks[l_i](
 				torch.cat([dec_2_outs[o_i], enc_1_outs[o_i]], dim=1)
 			) for o_i, l_i in layer_to_iter(7)
 		]
-		dec_1_out = torch.stack(dec_1_out, dim=1)  # Shape: B x T x 1 x H x W
+		dec_1_out = torch.stack(dec_1_outs, dim=1)  # Shape: B x T x 1 x H x W
 		
 		return dec_1_out
 	
@@ -583,13 +583,13 @@ class MultitaskMNISTUNetTimeAdd(torch.nn.Module):
 				self.time_dense_d2_tasks[l_i](time_embed)[:, :, None, None]
 			)) for o_i, l_i in layer_to_iter(6)
 		]
-		dec_1_out = [
+		dec_1_outs = [
 			self.conv_d1_tasks[l_i](
 				torch.cat([dec_2_outs[o_i], enc_1_outs[o_i]], dim=1)
 			)
 			for o_i, l_i in layer_to_iter(7)
 		]
-		dec_1_out = torch.stack(dec_1_out, dim=1)  # Shape: B x T x 1 x H x W
+		dec_1_out = torch.stack(dec_1_outs, dim=1)  # Shape: B x T x 1 x H x W
 		
 		return dec_1_out
 

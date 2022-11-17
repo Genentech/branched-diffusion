@@ -110,7 +110,7 @@ def train_model(
 			loss_val = loss.item()
 			t_iter.set_description("Loss: %.2f" % loss_val)
 
-			if np.isnan(loss_val):
+			if not np.isfinite(loss_val):
 				continue
 			
 			optim.zero_grad()
