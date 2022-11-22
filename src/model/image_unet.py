@@ -633,7 +633,7 @@ class LabelGuidedMNISTUNetTimeConcat(torch.nn.Module):
 		"""
 		Initialize a time-dependent U-net for MNIST, where time embeddings are
 		concatenated to image representations.
-		Labels are included as part of the input
+		Labels are included as part of the input.
 		Arguments:
 			`num_classes`: number of classification tasks possible, C
 			`t_limit`: maximum time horizon
@@ -747,7 +747,7 @@ class LabelGuidedMNISTUNetTimeConcat(torch.nn.Module):
 			`t`: B-tensor containing the times to train the network for each
 				image
 			`label`: B-tensor containing class indices
-		Returns a B x T x 1 x H x W tensor which consists of the prediction.
+		Returns a B x 1 x H x W tensor which consists of the prediction.
 		"""
 		# Get the time embeddings for `t`
 		# We embed the time as cos((t/T) * (2pi)) and sin((t/T) * (2pi))

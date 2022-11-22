@@ -114,9 +114,6 @@ class MultitaskTabularNet(torch.nn.Module):
 				else enumerate(task_inds)
 			)
 
-		
-		x = self.input_dense(xt) + time_embed
-				
 		for i in range(len(self.dense_layers)):
 			if i == 0:
 				dense_outs = [
@@ -157,6 +154,137 @@ class MultitaskTabularNet(torch.nn.Module):
 		
 		# Compute loss as MSE
 		squared_error = torch.square(true_values - pred_values_subset)
+		if weights is not None:
+			squared_error = squared_error / weights
+			
+		return torch.mean(torch.sum(
+			squared_error,
+			dim=tuple(range(1, len(squared_error.shape)))
+		))
+
+
+class LabelGuidedTabularNet(torch.nn.Module):
+
+	def __init__(
+
+		self, num_classes, input_dim, t_limit=1, hidden_dims=[256, 256, 256],
+		time_embed_std=30, embed_size=256, label_embed_size=32
+	):
+		"""
+		Initialize a time-dependent dense neural network for tabular data.
+		Labels are included as part of the input.
+		Arguments:
+			`num_classes`: number of classification tasks possible, C
+			`input_dim`: dimension of input data, D
+			`t_limit`: maximum time horizon
+			`hidden_dims`: dimensions of each hidden layer; this is of length
+				one fewer than the number of layers
+			`time_embed_std`: standard deviation of random weights to sample for
+				time embeddings
+			`embed_size`: size of the time embeddings and input embeddings
+		"""
+		super().__init__()
+		
+		assert embed_size % 2 == 0
+
+		self.creation_args = locals()
+		del self.creation_args["self"]
+		del self.creation_args["__class__"]
+		self.creation_args = sanitize_sacred_arguments(self.creation_args)
+		
+		self.num_classes = num_classes
+		self.t_limit = t_limit
+
+		# Map labels to embeddings
+		self.label_embedder = torch.nn.Embedding(num_classes, label_embed_size)
+
+		# Random embedding layer for time; the random weights are set at the
+		# start and are not trainable
+		self.time_embed_rand_weights = torch.nn.Parameter(
+			torch.randn(embed_size // 2) * time_embed_std,
+			requires_grad=False
+		)
+		
+		# Initial dense layers to generate input embedding (always shared)
+		self.time_dense_1 = torch.nn.Linear(embed_size, embed_size)
+		self.time_dense_2 = torch.nn.Linear(embed_size, embed_size)
+		self.input_dense = torch.nn.Linear(input_dim, embed_size)
+	   
+		# Dense layers that form the bulk of the network
+		self.dense_layers = torch.nn.ModuleList()  # List of lists
+		for i in range(len(hidden_dims) + 1):
+			if i == 0:
+				in_size, out_size = \
+					embed_size + label_embed_size, hidden_dims[i]
+			elif i < len(hidden_dims):
+				in_size, out_size = hidden_dims[i - 1], hidden_dims[i]
+			else:
+				in_size, out_size = hidden_dims[i - 1], input_dim
+			layer_list = []
+			self.dense_layers.append(torch.nn.Linear(in_size, out_size))
+
+		# Activation functions
+		self.swish = lambda x: x * torch.sigmoid(x)
+		self.relu = torch.nn.ReLU()
+
+	def forward(self, xt, t, label):
+		"""
+		Forward pass of the network.
+		Arguments:
+			`xt`: B x D tensor containing the images to train on
+			`t`: B-tensor containing the times to train the network for each
+				input
+			`label`: B-tensor containing class indices
+		Returns a B x D tensor which consists of the prediction.
+		"""
+		# Get the time embeddings for `t`
+		# We embed the time as cos((t/T) * (2pi) * z) and sin((t/T) * (2pi) * z)
+		time_embed_args = (t[:, None] / self.t_limit) * (2 * np.pi) * \
+			self.time_embed_rand_weights[None, :]
+		# Shape: B x (E / 2)
+		time_embed = self.swish(
+			torch.cat([
+				torch.sin(time_embed_args), torch.cos(time_embed_args)
+			], dim=1)
+		)
+		# Shape: B x E
+
+		time_embed_out = self.time_dense_2(
+			self.swish(self.time_dense_1(time_embed))
+		)
+		# Shape: B x E
+
+		# Get label embeddings
+		label_embed = self.label_embedder(label)
+
+		x = self.input_dense(xt) + time_embed_out  # Shape: B x E
+				
+		for i in range(len(self.dense_layers)):
+			if i == 0:
+				dense_out = self.relu(self.dense_layers[i](
+					torch.cat([x, label_embed], dim=1)
+				))
+			elif i < len(self.dense_layers) - 1:
+				dense_out = self.relu(self.dense_layers[i](dense_out))
+			else:
+				dense_out = self.dense_layers[i](dense_out)
+
+		return dense_out
+		
+	def loss(self, pred_values, true_values, weights=None):
+		"""
+		Computes the loss of the neural network.
+		Arguments:
+			`pred_values`: a B x D tensor of predictions from the network
+			`true_values`: a B x D tensor of true values to predict
+			`weights`: if provided, a tensor broadcastable with B x D to weight
+				the squared error by, prior to summing or averaging across
+				dimensions
+		Returns a scalar loss of mean-squared-error values, summed across the
+		D dimension and averaged across the batch dimension.
+		"""
+		# Compute loss as MSE
+		squared_error = torch.square(true_values - pred_values)
 		if weights is not None:
 			squared_error = squared_error / weights
 			
