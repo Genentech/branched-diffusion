@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 def plot_mnist_digits(
-	digits, grid_size=(10, 1), scale=1, clip=True, title=None, return_fig=False
+	digits, grid_size=(10, 1), scale=1, clip=True, title=None
 ):
 	"""
 	Plots MNIST digits. No normalization will be done.
@@ -18,7 +18,6 @@ def plot_mnist_digits(
 		`scale`: amount to scale figure size by
 		`clip`: if True, clip values to between 0 and 1
 		`title`: if given, title for the plot
-		`return_fig`: if True, return the figure object
 	"""
 	digits = np.transpose(digits, (0, 2, 3, 1))
 	if clip:
@@ -42,12 +41,9 @@ def plot_mnist_digits(
 	for j in range(height):
 		for i in range(width):
 			index = i + (width * j)
-			ax[j][i].imshow(digits[index], cmap="gray", aspect="auto")
+			ax[j][i].imshow(digits[index], cmap="gray", aspect="auto", interpolation=None)
 			ax[j][i].axis("off")
 	if title:
 		ax[0][0].set_title(title)
 	plt.subplots_adjust(bottom=0.25)
-	plt.show()
-
-	if return_fig:
-		return fig
+	return fig
