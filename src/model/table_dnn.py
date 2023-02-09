@@ -62,7 +62,6 @@ class MultitaskTabularNet(torch.nn.Module):
 				in_size, out_size = hidden_dims[i - 1], hidden_dims[i]
 			else:
 				in_size, out_size = hidden_dims[i - 1], input_dim
-			layer_list = []
 			self.dense_layers.append(torch.nn.ModuleList([
 				torch.nn.Linear(in_size, out_size)
 				for _ in layer_to_iter(i)
@@ -220,7 +219,6 @@ class LabelGuidedTabularNet(torch.nn.Module):
 				in_size, out_size = hidden_dims[i - 1], hidden_dims[i]
 			else:
 				in_size, out_size = hidden_dims[i - 1], input_dim
-			layer_list = []
 			self.dense_layers.append(torch.nn.Linear(in_size, out_size))
 
 		# Activation functions
