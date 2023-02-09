@@ -53,6 +53,7 @@ def compute_time_similarities(diffused_inputs_by_class, times, verbose=True):
 	sim_matrix = np.empty((len(times), len(classes), len(classes)))
 	
 	t_iter = tqdm.trange(len(times)) if verbose else range(len(times))
+	warning = True
 	for t_i in t_iter:
 		for i in range(len(classes)):
 			for j in range(i + 1):
@@ -71,6 +72,22 @@ def compute_time_similarities(diffused_inputs_by_class, times, verbose=True):
 						temp = inputs_2[mid]
 						inputs_2[mid] = inputs_2[0]
 						inputs_2[0] = temp
+				elif inputs_1.shape[0] != inputs_2.shape[0]:
+					# Truncate to the same size
+					if inputs_1.shape[0] < inputs_2.shape[0]:
+						if warning:
+							print("Warning: truncating %d to %d samples" % (
+								inputs_2.shape[0], inputs_1.shape[0]
+							))
+							warning = False
+						inputs_2 = inputs_2[:inputs_1.shape[0]]
+					else:
+						if warning:
+							print("Warning: truncating %d to %d samples" % (
+								inputs_1.shape[0], inputs_2.shape[0]
+							))
+							warning = False
+						inputs_1 = inputs_1[:inputs_2.shape[0]]
 				
 				sims = torch.nn.functional.cosine_similarity(
 					inputs_1, inputs_2, dim=1
