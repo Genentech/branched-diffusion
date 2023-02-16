@@ -89,7 +89,7 @@ class MultitaskAutoencoderTimeConcat(torch.nn.Module):
 		"""
 		Forward pass of the network.
 		Arguments:
-			`xt`: B x D tensor containing the images to train on
+			`xt`: B x D tensor containing the inputs to train on
 			`t`: B-tensor containing the times to train the network for each
 				input
 			`task_inds`: an iterable of task indices to generate predictions
@@ -272,7 +272,7 @@ class MultitaskAutoencoderTimeAdd(torch.nn.Module):
 		"""
 		Forward pass of the network.
 		Arguments:
-			`xt`: B x D tensor containing the images to train on
+			`xt`: B x D tensor containing the inputs to train on
 			`t`: B-tensor containing the times to train the network for each
 				input
 			`task_inds`: an iterable of task indices to generate predictions
@@ -433,9 +433,10 @@ class MultitaskResNet(torch.nn.Module):
 				]))
 
 		# Last layer that applies a linear function to each output
-		self.last_linear = torch.nn.Conv1d(
-			input_dim, input_dim, num_tasks, groups=input_dim
-		)
+		self.last_linears = torch.nn.ModuleList([
+			torch.nn.Conv1d(input_dim, input_dim, 1, groups=input_dim)
+			for _ in range(num_tasks)
+		])
 
 		# Activation functions
 		self.swish = lambda x: x * torch.sigmoid(x)
@@ -444,7 +445,7 @@ class MultitaskResNet(torch.nn.Module):
 		"""
 		Forward pass of the network.
 		Arguments:
-			`xt`: B x D tensor containing the images to train on
+			`xt`: B x D tensor containing the inputs to train on
 			`t`: B-tensor containing the times to train the network for each
 				input
 			`task_inds`: an iterable of task indices to generate predictions
@@ -505,11 +506,14 @@ class MultitaskResNet(torch.nn.Module):
 		body_out = torch.stack(layer_outs, dim=1)  # Shape: B x T x D
 
 		# For each output scalar, apply a distinct linear function
-		out = torch.permute(
-			self.last_linear(torch.permute(body_out, (0, 2, 1))),
-			(0, 2, 1)
-		)
-		return out
+		last_linear_outs = [
+			self.last_linears[l_i](body_out[:, o_i][:, :, None])[:, :, 0]
+			for o_i, l_i in (
+				enumerate(range(self.num_tasks))
+				if task_inds is None else enumerate(task_inds)
+			)
+		]
+		return torch.stack(last_linear_outs, dim=1)
 		
 	def loss(self, pred_values, true_values, task_inds, weights=None):
 		"""
