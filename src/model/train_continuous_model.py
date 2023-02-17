@@ -36,7 +36,7 @@ def config():
 def train_model(
 	model, sde, data_loader, model_type, class_mapper, num_epochs,
 	learning_rate, _run, loss_weighting_type="empirical_norm",
-	feature_weights=None,t_limit=1
+	weight_func=None, t_limit=1
 ):
 	"""
 	Trains a diffusion model using the given instantiated model and SDE object.
@@ -57,10 +57,10 @@ def train_model(
 			weight by g^2, "expected_norm" to weight by the expected mean
 			magnitude of the loss, "empirical_norm" to weight by the observed
 			true norm, or None to do no weighting at all
-		`feature_weights`: if given, a tensor of the same shape of x (excluding
-			the batch dimension), which will weight each feature of the loss
-			separately (in addition to any loss weighting specified by
-			`loss_weighting_type`)
+		`weight_func`: if given, a function mapping a batch of inputs x0 to a
+			broadcastable tensor of weights which will multiply into the loss
+			for each predicted feature (in addition to any loss weighting
+			specified by `loss_weighting_type`)
 		`t_limit`: training will occur between time 0 and `t_limit`
 	"""
 	assert model_type in ("branched", "labelguided")
@@ -71,9 +71,6 @@ def train_model(
 	model.train()
 	torch.set_grad_enabled(True)
 	optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-	if feature_weights is not None:
-		feature_weights = feature_weights[None]
 
 	for epoch_num in range(num_epochs):
 		batch_losses = []
@@ -106,9 +103,10 @@ def train_model(
 			elif loss_weighting_type is None:
 				loss_weight = torch.ones_like(x0)
 
-			if feature_weights is not None:
+			if weight_func is not None:
 				# Division here, as `loss_weight` itself is the divisor
-				loss_weight = loss_weight / feature_weights
+				extra_weights = weight_func(x0)
+				loss_weight = loss_weight / extra_weights
 
 			# Compute loss
 			if model_type == "branched":
