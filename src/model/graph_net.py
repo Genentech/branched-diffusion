@@ -526,7 +526,7 @@ class GraphJointNetwork(torch.nn.Module):
 		# Activation functions
 		self.swish = lambda x: x * torch.sigmoid(x)
 		
-	def forward(self, xt, t, task_inds=None):
+	def forward(self, xt, t, node_flags, task_inds=None):
 		"""
 		Forward pass of the network.
 		Arguments:
@@ -535,6 +535,8 @@ class GraphJointNetwork(torch.nn.Module):
 				matrices
 			`t`: B-tensor containing the times to train the network for each
 				input
+			`node_flags`: a B x M binary tensor denoting which nodes of each
+				graph actually are present, and which are just there for padding
 			`task_inds`: an iterable of task indices to generate predictions
 				for; if specified, the output tensor will be
 				B x `len(task_inds)` x D instead of B x T x D
@@ -556,13 +558,12 @@ class GraphJointNetwork(torch.nn.Module):
 		# Shape: B x 1 x 1 x 1
 		
 		adj, x = xt[:, :, :xt.shape[1]], xt[:, :, xt.shape[1]:]
-		flags = node_flags(adj)
 		x_preds = [
-			self.x_nets[i](x, adj, flags) for i in
+			self.x_nets[i](x, adj, node_flags) for i in
 			(range(self.num_tasks) if task_inds is None else task_inds)
 		]
 		a_preds = [
-			self.a_nets[i](x, adj, flags) for i in
+			self.a_nets[i](x, adj, node_flags) for i in
 			(range(self.num_tasks) if task_inds is None else task_inds)
 		]
 		x_preds, a_preds = \
