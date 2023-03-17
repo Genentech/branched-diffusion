@@ -181,6 +181,7 @@ class LabelGuidedTabularNet(torch.nn.Module):
 			`time_embed_std`: standard deviation of random weights to sample for
 				time embeddings
 			`embed_size`: size of the time embeddings and input embeddings
+			`label_embed_size`: size of the label embeddings
 		"""
 		super().__init__()
 		
