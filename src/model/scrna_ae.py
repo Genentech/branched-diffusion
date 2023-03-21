@@ -1004,3 +1004,139 @@ class LabelGuidedResNet(torch.nn.Module):
 			dim=tuple(range(1, len(squared_error.shape)))
 		))
 
+		
+class LabelGuidedResNetAdd(torch.nn.Module):
+	def __init__(
+		self, num_classes, input_dim, t_limit=1, hidden_dim=8192, num_layers=5,
+		time_embed_std=30, time_embed_size=32, label_embed_size=32
+	):
+		"""
+		Initialize a time-dependent residual network for scRNA-seq data, where
+		time embeddings are added onto intermediate representations.
+		Arguments:
+			`num_classes`: number of classification tasks possible, C
+			`input_dim`: dimension of input data, D
+			`t_limit`: maximum time horizon
+			`hidden_dim`: dimensions of each hidden layer
+			`num_layers`: number of layers in the network
+			`time_embed_std`: standard deviation of random weights to sample for
+				time embeddings
+			`time_embed_size`: size of the time embeddings
+			`label_embed_size`: size of the label embeddings
+		"""
+		super().__init__()
+
+		assert time_embed_size % 2 == 0
+
+		self.creation_args = locals()
+		del self.creation_args["self"]
+		del self.creation_args["__class__"]
+		self.creation_args = sanitize_sacred_arguments(self.creation_args)
+		
+		self.num_classes = num_classes
+		self.t_limit = t_limit
+
+		# Random embedding layer for time; the random weights are set at the
+		# start and are not trainable
+		self.time_embed_rand_weights = torch.nn.Parameter(
+			torch.randn(time_embed_size // 2) * time_embed_std,
+			requires_grad=False
+		)
+		
+		# Map labels to embeddings
+		self.label_embedder = torch.nn.Embedding(num_classes, label_embed_size)
+		self.label_dense = torch.nn.Linear(label_embed_size, input_dim)
+		
+		# Layers that form the bulk of the network
+		self.layers = torch.nn.ModuleList()  # List of layer modules
+		self.time_embedders = torch.nn.ModuleList()  # List of embedders
+		for i in range(num_layers):
+			if i == 0:
+				in_size, out_size = input_dim, hidden_dim
+			elif i < num_layers - 1:
+				in_size, out_size = hidden_dim, hidden_dim
+			else:
+				in_size, out_size = hidden_dim, input_dim
+
+			layer = torch.nn.Sequential()
+			layer.append(torch.nn.Linear(in_size, out_size))
+
+			if i < num_layers - 1:
+				layer.append(torch.nn.BatchNorm1d(out_size))
+				layer.append(torch.nn.ReLU())
+
+			self.layers.append(layer)
+			
+			if i < num_layers - 1:
+				self.time_embedders.append(
+					torch.nn.Linear(time_embed_size, in_size)
+				)
+
+		# Activation functions
+		self.swish = lambda x: x * torch.sigmoid(x)
+
+	def forward(self, xt, t, label):
+		"""
+		Forward pass of the network.
+		Arguments:
+			`xt`: B x D tensor containing the inputs to train on
+			`t`: B-tensor containing the times to train the network for each
+				input
+			`label`: B-tensor containing class indices
+		Returns a B x D tensor which consists of the prediction.
+		"""
+		# Get the time embeddings for `t`
+		# We had sampled a vector z from a zero-mean Gaussian of fixed variance
+		# We embed the time as cos((t/T) * (pi / 2) * z) and
+		# sin((t/T) * (pi / 2) * z)
+		time_embed_args = (t[:, None] / self.t_limit) * \
+			self.time_embed_rand_weights[None, :] * (np.pi / 2)
+		# Shape: B x (E / 2)
+
+		time_embed = self.swish(torch.cat([
+			torch.sin(time_embed_args), torch.cos(time_embed_args)
+		], dim=1))
+		# Shape: B x E
+
+		# Get label embeddings
+		label_embed = self.label_embedder(label)
+
+		for i in range(len(self.layers)):
+			if i == 0:
+				running_sum = self.layers[i](
+					xt + self.time_embedders[i](time_embed) +
+					self.label_dense(label_embed)
+				)
+			elif i < len(self.layers) - 1:
+				layer_out = self.layers[i](
+					running_sum +
+					self.time_embedders[i](time_embed)
+				)
+				running_sum = running_sum + layer_out
+			else:
+				layer_out = self.layers[i](running_sum)
+
+		return layer_out
+
+	def loss(self, pred_values, true_values, weights=None):
+		"""
+		Computes the loss of the neural network.
+		Arguments:
+			`pred_values`: a B x D tensor of predictions from the network
+			`true_values`: a B x D tensor of true values to predict
+			`weights`: if provided, a tensor broadcastable with B x D to weight
+				the squared error by, prior to summing or averaging across
+				dimensions
+		Returns a scalar loss of mean-squared-error values, summed across the
+		D dimension and averaged across the batch dimension.
+		"""
+		# Compute loss as MSE
+		squared_error = torch.square(true_values - pred_values)
+		if weights is not None:
+			squared_error = squared_error / weights
+			
+		return torch.mean(torch.sum(
+			squared_error,
+			dim=tuple(range(1, len(squared_error.shape)))
+		))
+
