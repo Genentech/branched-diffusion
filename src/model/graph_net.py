@@ -302,48 +302,14 @@ class AttentionLayer(torch.nn.Module):
 		return x_out, adj_out
 
 
-class BaselineNetworkLayer(torch.nn.Module):
-
-	def __init__(self, num_linears, conv_input_dim, conv_output_dim, input_dim, output_dim, batch_norm=False):
-
-		super(BaselineNetworkLayer, self).__init__()
-
-		self.convs = torch.nn.ModuleList()
-		for _ in range(input_dim):
-			self.convs.append(DenseGCNConv(conv_input_dim, conv_output_dim))
-		self.hidden_dim = max(input_dim, output_dim)
-		self.mlp_in_dim = input_dim + 2*conv_output_dim
-		self.mlp = MLP(num_linears, self.mlp_in_dim, self.hidden_dim, output_dim, 
-							use_bn=False, activate_func=torch.nn.functional.elu)
-		self.multi_channel = MLP(2, input_dim*conv_output_dim, self.hidden_dim, conv_output_dim, 
-									use_bn=False, activate_func=torch.nn.functional.elu)
-		
-	def forward(self, x, adj, flags):
-	
-		x_list = []
-		for _ in range(len(self.convs)):
-			_x = self.convs[_](x, adj[:,_,:,:])
-			x_list.append(_x)
-		x_out = mask_x(self.multi_channel(torch.cat(x_list, dim=-1)) , flags)
-		x_out = torch.tanh(x_out)
-
-		x_matrix = node_feature_to_matrix(x_out)
-		mlp_in = torch.cat([x_matrix, adj.permute(0,2,3,1)], dim=-1)
-		shape = mlp_in.shape
-		mlp_out = self.mlp(mlp_in.view(-1, shape[-1]))
-		_adj = mlp_out.view(shape[0], shape[1], shape[2], -1).permute(0,3,1,2)
-		_adj = _adj + _adj.transpose(-1,-2)
-		adj_out = mask_adjs(_adj, flags)
-
-		return x_out, adj_out
-
-
-class BaselineNetwork(torch.nn.Module):
+class ScoreNetworkA(torch.nn.Module):
 
 	def __init__(self, max_feat_num, max_node_num, nhid, num_layers, num_linears, 
-					c_init, c_hid, c_final, adim, num_heads=4, conv='GCN'):
+					c_init, c_hid, c_final, adim, num_tasks, shared_layers, num_heads=4, conv='GCN'):
 
-		super(BaselineNetwork, self).__init__()
+		assert num_layers + 1 == len(shared_layers)  # AttentionLayers + MLP
+
+		super(ScoreNetworkA, self).__init__()
 
 		self.nfeat = max_feat_num
 		self.max_node_num = max_node_num
@@ -353,142 +319,161 @@ class BaselineNetwork(torch.nn.Module):
 		self.c_init = c_init
 		self.c_hid = c_hid
 		self.c_final = c_final
-
-		self.layers = torch.nn.ModuleList()
-		for _ in range(self.num_layers):
-			if _==0:
-				self.layers.append(BaselineNetworkLayer(self.num_linears, self.nfeat, self.nhid, self.c_init, self.c_hid))
-
-			elif _==self.num_layers-1:
-				self.layers.append(BaselineNetworkLayer(self.num_linears, self.nhid, self.nhid, self.c_hid, self.c_final))
-
-			else:
-				self.layers.append(BaselineNetworkLayer(self.num_linears, self.nhid, self.nhid, self.c_hid, self.c_hid)) 
-
-		self.fdim = self.c_hid*(self.num_layers-1) + self.c_final + self.c_init
-		self.final = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2*self.fdim, output_dim=1, 
-							use_bn=False, activate_func=torch.nn.functional.elu)
-		self.mask = torch.ones([self.max_node_num, self.max_node_num]) - torch.eye(self.max_node_num)
-		self.mask.unsqueeze_(0)   
-
-	def forward(self, x, adj, flags=None):
-
-		adjc = pow_tensor(adj, self.c_init)
-
-		adj_list = [adjc]
-		for _ in range(self.num_layers):
-
-			x, adjc = self.layers[_](x, adjc, flags)
-			adj_list.append(adjc)
-		
-		adjs = torch.cat(adj_list, dim=1).permute(0,2,3,1)
-		out_shape = adjs.shape[:-1] # B x N x N
-		score = self.final(adjs).view(*out_shape)
-
-		self.mask = self.mask.to(score.device)
-		score = score * self.mask
-
-		score = mask_adjs(score, flags)
-
-		return score
-
-
-class ScoreNetworkA(BaselineNetwork):
-
-	def __init__(self, max_feat_num, max_node_num, nhid, num_layers, num_linears, 
-					c_init, c_hid, c_final, adim, num_heads=4, conv='GCN'):
-
-		super(ScoreNetworkA, self).__init__(max_feat_num, max_node_num, nhid, num_layers, num_linears, 
-											c_init, c_hid, c_final, adim, num_heads=4, conv='GCN')
-		
 		self.adim = adim
 		self.num_heads = num_heads
 		self.conv = conv
 
-		self.layers = torch.nn.ModuleList()
-		for _ in range(self.num_layers):
-			if _==0:
-				self.layers.append(AttentionLayer(self.num_linears, self.nfeat, self.nhid, self.nhid, self.c_init, 
-													self.c_hid, self.num_heads, self.conv))
-			elif _==self.num_layers-1:
-				self.layers.append(AttentionLayer(self.num_linears, self.nhid, self.adim, self.nhid, self.c_hid, 
-													self.c_final, self.num_heads, self.conv))
-			else:
-				self.layers.append(AttentionLayer(self.num_linears, self.nhid, self.adim, self.nhid, self.c_hid, 
-													self.c_hid, self.num_heads, self.conv))
+		self.num_tasks = num_tasks
+		self.shared_layers = shared_layers
+
+		self.layers = torch.nn.ModuleList()  # List of lists
+		for i in range(self.num_layers):
+			layer_tasks = torch.nn.ModuleList()
+			for _ in range(1 if shared_layers[i] else num_tasks):
+				if i == 0:
+					layer = AttentionLayer(self.num_linears, self.nfeat, self.nhid, self.nhid, self.c_init, 
+														self.c_hid, self.num_heads, self.conv)
+				elif i == self.num_layers - 1:
+					layer = AttentionLayer(self.num_linears, self.nhid, self.adim, self.nhid, self.c_hid, 
+														self.c_final, self.num_heads, self.conv)
+				else:
+					layer = AttentionLayer(self.num_linears, self.nhid, self.adim, self.nhid, self.c_hid, 
+													self.c_hid, self.num_heads, self.conv)
+				layer_tasks.append(layer)
+			self.layers.append(layer_tasks)
 
 		self.fdim = self.c_hid*(self.num_layers-1) + self.c_final + self.c_init
-		self.final = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2*self.fdim, output_dim=1, 
-							use_bn=False, activate_func=torch.nn.functional.elu)
+
+		self.finals = torch.nn.ModuleList()
+		for _ in range(1 if shared_layers[-1] else num_tasks):
+			mlp = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2*self.fdim, output_dim=1, 
+						use_bn=False, activate_func=torch.nn.functional.elu)
+			self.finals.append(mlp)
+
 		self.mask = torch.ones([self.max_node_num, self.max_node_num]) - torch.eye(self.max_node_num)
 		self.mask.unsqueeze_(0)  
 
-	def forward(self, x, adj, flags):
-
+	def forward(self, x, adj, flags, task_inds=None):
+		if task_inds is None:
+			layer_to_iter = lambda layer_i: (
+				enumerate([0] * self.num_tasks) if self.shared_layers[layer_i]
+				else enumerate(range(self.num_tasks))
+			)
+		else:
+			layer_to_iter = lambda layer_i: (
+				enumerate([0] * len(task_inds)) if self.shared_layers[layer_i]
+				else enumerate(task_inds)
+			)
+		
 		adjc = pow_tensor(adj, self.c_init)
 
-		adj_list = [adjc]
-		for _ in range(self.num_layers):
+		num_out_tasks = len(task_inds) if task_inds is not None else self.num_tasks
+		xs = [x for _ in range(num_out_tasks)]
+		adjcs = [adjc for _ in range(num_out_tasks)]
+		adj_lists = [[adjc] for _ in range(num_out_tasks)]  # List of lists
 
-			x, adjc = self.layers[_](x, adjc, flags)
-			adj_list.append(adjc)
-		
-		adjs = torch.cat(adj_list, dim=1).permute(0,2,3,1)
-		out_shape = adjs.shape[:-1] # B x N x N
-		score = self.final(adjs).view(*out_shape)
-		
-		self.mask = self.mask.to(score.device)
-		score = score * self.mask
+		for layer_i in range(self.num_layers):
+			layer_outs = [
+				self.layers[layer_i][l_i](xs[o_i], adjcs[o_i], flags)
+				for o_i, l_i in layer_to_iter(layer_i)
+			]
+			xs = [layer_out[0] for layer_out in layer_outs]
+			adjcs = [layer_out[1] for layer_out in layer_outs]
+			for i in range(num_out_tasks):
+				adj_lists[i].append(adjcs[i])
 
-		score = mask_adjs(score, flags)
+		task_adjs = [
+			torch.cat(adj_list, dim=1).permute(0, 2, 3, 1) for adj_list in adj_lists
+		]
+		out_shape = task_adjs[0].shape[:-1]  # B x N x N
+		scores = [
+			self.finals[l_i](task_adjs[o_i]).view(*out_shape)
+			for o_i, l_i in layer_to_iter(-1)
+		]
+		self.mask = self.mask.to(scores[0].device)
+		scores = [mask_adjs(score * self.mask, flags) for score in scores]
 
-		return score
+		return torch.stack(scores, dim=1)  # B x T x N x N
+
 
 class ScoreNetworkX(torch.nn.Module):
 
-	def __init__(self, max_feat_num, depth, nhid):
+	def __init__(self, max_feat_num, depth, nhid, num_tasks, shared_layers):
 
 		super(ScoreNetworkX, self).__init__()
+
+		assert depth + 1 == len(shared_layers)  # AttentionLayers + MLP
 
 		self.nfeat = max_feat_num
 		self.depth = depth
 		self.nhid = nhid
 
-		self.layers = torch.nn.ModuleList()
-		for _ in range(self.depth):
-			if _ == 0:
-				self.layers.append(DenseGCNConv(self.nfeat, self.nhid))
-			else:
-				self.layers.append(DenseGCNConv(self.nhid, self.nhid))
+		self.num_tasks = num_tasks
+		self.shared_layers = shared_layers
+
+		self.layers = torch.nn.ModuleList()  # List of lists
+		for i in range(self.depth):
+			layer_tasks = torch.nn.ModuleList()
+			for _ in range(1 if shared_layers[i] else num_tasks):
+				if i == 0:
+					layer = DenseGCNConv(self.nfeat, self.nhid)
+				else:
+					layer = DenseGCNConv(self.nhid, self.nhid)
+				layer_tasks.append(layer)
+			self.layers.append(layer_tasks)
 
 		self.fdim = self.nfeat + self.depth * self.nhid
-		self.final = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2*self.fdim, output_dim=self.nfeat, 
-							use_bn=False, activate_func=torch.nn.functional.elu)
+		self.finals = torch.nn.ModuleList()
+		for _ in range(1 if shared_layers[-1] else num_tasks):
+			mlp = MLP(num_layers=3, input_dim=self.fdim, hidden_dim=2*self.fdim, output_dim=self.nfeat, 
+						use_bn=False, activate_func=torch.nn.functional.elu)
+			self.finals.append(mlp)
 
 		self.activation = torch.tanh
 
-	def forward(self, x, adj, flags):
+	def forward(self, x, adj, flags, task_inds=None):
+		if task_inds is None:
+			layer_to_iter = lambda layer_i: (
+				enumerate([0] * self.num_tasks) if self.shared_layers[layer_i]
+				else enumerate(range(self.num_tasks))
+			)
+		else:
+			layer_to_iter = lambda layer_i: (
+				enumerate([0] * len(task_inds)) if self.shared_layers[layer_i]
+				else enumerate(task_inds)
+			)
+		
+		num_out_tasks = len(task_inds) if task_inds is not None else self.num_tasks
+		xs = [x for _ in range(num_out_tasks)]
+		x_lists = [[x] for _ in range(num_out_tasks)]
 
-		x_list = [x]
-		for _ in range(self.depth):
-			x = self.layers[_](x, adj)
-			x = self.activation(x)
-			x_list.append(x)
-
-		xs = torch.cat(x_list, dim=-1) # B x N x (F + num_layers x H)
+		for layer_i in range(self.depth):
+			xs = [
+				self.layers[layer_i][l_i](xs[o_i], adj)
+				for o_i, l_i in layer_to_iter(layer_i)
+			]
+			xs = [self.activation(x) for x in xs]
+			for i in range(num_out_tasks):
+				x_lists[i].append(xs[i])
+	
+		task_xs = [torch.cat(x_list, dim=-1) for x_list in x_lists]  # B x N x (F + num_layers x H)
 		out_shape = (adj.shape[0], adj.shape[1], -1)
-		x = self.final(xs).view(*out_shape)
+		xs = [
+			self.finals[l_i](task_xs[o_i]).view(*out_shape)
+			for o_i, l_i in layer_to_iter(-1)
+		]
+		xs = [mask_x(x, flags) for x in xs]
 
-		x = mask_x(x, flags)
-
-		return x
+		return torch.stack(xs, dim=1)  # B x T x N x F
 
 
 class GraphJointNetwork(torch.nn.Module):
 	def __init__(
 		self, num_tasks, t_limit, max_feat_num=9, max_node_num=38, depth=2,
 		nhid=16, num_layers=6, num_linears=3, c_init=2, c_hid=8, c_final=4,
-		adim=16, num_heads=4, conv="GCN", time_embed_std=30, time_embed_size=256
+		adim=16, num_heads=4, conv="GCN", time_embed_std=30, time_embed_size=256,
+		a_shared_layers=[True, True, True, False, False, False, False],
+		x_shared_layers=[True, False, False]
 	):
 		super().__init__()
 		
@@ -497,22 +482,18 @@ class GraphJointNetwork(torch.nn.Module):
 		del self.creation_args["__class__"]
 		self.creation_args = sanitize_sacred_arguments(self.creation_args)
 
-
-		self.num_tasks = num_tasks
 		self.t_limit = t_limit
 
-		self.x_nets = torch.nn.ModuleList([
-			ScoreNetworkX(max_feat_num=max_feat_num, depth=depth, nhid=nhid)
-			for _ in range(num_tasks)
-		])
-		self.a_nets = torch.nn.ModuleList([
-			ScoreNetworkA(
-				max_feat_num=max_feat_num, max_node_num=max_node_num, nhid=nhid,
-				num_layers=num_layers, num_linears=num_linears,
-				c_init=c_init, c_hid=c_hid, c_final=c_final, adim=adim,
-				num_heads=num_heads, conv=conv
-			) for _ in range(num_tasks)
-		])
+		self.x_net = ScoreNetworkX(
+			max_feat_num=max_feat_num, depth=depth, nhid=nhid,
+			num_tasks=num_tasks, shared_layers=x_shared_layers
+		)
+		self.a_net = ScoreNetworkA(
+			max_feat_num=max_feat_num, max_node_num=max_node_num, nhid=nhid,
+			num_layers=num_layers, num_linears=num_linears, c_init=c_init,
+			c_hid=c_hid, c_final=c_final, adim=adim, num_heads=num_heads,
+			conv=conv, num_tasks=num_tasks, shared_layers=a_shared_layers
+		)
 		
 		# Random embedding layer for time; the random weights are set at the
 		# start and are not trainable
@@ -558,16 +539,9 @@ class GraphJointNetwork(torch.nn.Module):
 		# Shape: B x 1 x 1 x 1
 		
 		adj, x = xt[:, :, :xt.shape[1]], xt[:, :, xt.shape[1]:]
-		x_preds = [
-			self.x_nets[i](x, adj, node_flags) for i in
-			(range(self.num_tasks) if task_inds is None else task_inds)
-		]
-		a_preds = [
-			self.a_nets[i](x, adj, node_flags) for i in
-			(range(self.num_tasks) if task_inds is None else task_inds)
-		]
-		x_preds, a_preds = \
-			torch.stack(x_preds, dim=1), torch.stack(a_preds, dim=1)
+
+		x_preds = self.x_net(x, adj, node_flags, task_inds)
+		a_preds = self.a_net(x, adj, node_flags, task_inds)
 		x_preds_scaled, a_preds_scaled = \
 			x_preds * time_scalar, a_preds * time_scalar
 
@@ -603,11 +577,54 @@ class GraphJointNetwork(torch.nn.Module):
 		))
 
 if __name__ == "__main__":
-	model = GraphJointNetwork(num_tasks=3, t_limit=1)
-	x = torch.ones((32, 38, 9))
-	adj = torch.ones((32, 38, 38))
+	# Define device
+	if torch.cuda.is_available():
+		DEVICE = "cuda"
+	else:
+		DEVICE = "cpu"
+
+	model = GraphJointNetwork(num_tasks=3, t_limit=1).to(DEVICE)
+	x = torch.ones((32, 38, 9), device=DEVICE)
+	adj = torch.ones((32, 38, 38), device=DEVICE)
+	task_inds = torch.randint(2, x.shape[:1])
 	xt = torch.cat([x, adj], dim=2)
-	t = torch.zeros(xt.shape[0])
-	pred = model(xt, t)
-	loss = model.loss(pred, xt, torch.randint(3, size=(xt.shape[0],)))
+	flags = node_flags(adj)
+	t = torch.zeros(xt.shape[0], device=DEVICE)
+	pred = model(xt, t, flags, task_inds)
+	loss = model.loss(pred, xt, torch.randint(3, size=(xt.shape[0],), device=DEVICE))
 	loss.backward()
+
+# Summary of operations
+# 
+# ScoreNetworkA:
+# - Start with X and A', where A' is concatenation of A and A^2 (concatenated along channels)
+# - Pass through 6 AttentionLayers (outputs new X and new A')
+# 	- X and A' modified every layer
+# 	- Keep all A's around in a list (starting from the first)
+# - Concatenate all A outputs along feature dimension
+# - Pass through MLP of 3 layers, mapping to just one output per entry
+# 
+# AttentionLayer
+# - Start with X and A' (e.g. concatenation of A/A^2; this will be more than just 2 channels in future iterations of calling this layer)
+# - For each channel in A' (e.g. A and A^2), pass through Attention mechanism
+# 	- Each Attention mechanism takes in X and a channel of A'
+# 	- Each Attention mechanism outputs a modified X and a mask; collect all modified Xs and masks in a list
+# - Concatenate all Xs and pass through MLP of 2 layers
+# - Concatenate all masks and A', and pass through MLP of 3 layers, giving new A'
+# 
+# Attention mechanism:
+# - Start with X and A (or A-like tensor)
+# - Compute Q = GCN(X, A), K = GCN(X, A), V = GCN(X, A) (three different GCNs)
+# - Split Q and K into attention heads, and compute activations A = QK (with appropriate constant scaling)
+# - Average A over heads and symmetrize
+# - Return V and A
+# 
+# GCN:
+# - Start with X and A
+# - Set diagonal of A too 1
+# - Return D^(-1/2)AD^(1/2)XW + b (learnable parameters W, b)
+# 
+# ScoreNetworkX:
+# - Start with X and A
+# - Pass X and A through 2 successive GCNs (X is updated each time), save all Xs
+# - Concatenate all Xs (including original), and pass through MLP of 3 layers
