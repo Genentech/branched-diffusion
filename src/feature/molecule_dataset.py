@@ -146,6 +146,52 @@ def label_cycle_num(smiles, nums_to_label=None):
 		return -1
 
 
+def label_macrocyclicity(smiles):
+	"""
+	Assigns a molecule an integer label based on macrocyclicity, irrespective of
+	aromatic cycles.
+	Arguments:
+		`smiles`: a SMILES string
+	Returns 1 if the molecule has a non-aromatic cycle, and 0 otherwise.
+	"""
+	mol = rdkit.Chem.MolFromSmiles(smiles)
+	for ring in mol.GetRingInfo().AtomRings():
+		aromatic = all(
+			mol.GetAtomWithIdx(atom_ind).GetIsAromatic() for atom_ind in ring
+		)
+		if not aromatic:
+			return 1
+	return 0
+
+
+def label_heteroaromaticity(smiles):
+	"""
+	Assigns a molecule an integer label based on heteroaromaticity.
+	Arguments:
+		`smiles`: a SMILES string
+	Returns 1 if the molecule has an heteroaromatic cycle (i.e. aromatic cycle
+	with atom other than C), 0 if the molecule has only carbon aromatic cycles,
+	and -1 if the molecule is not aromatic at all.
+	"""
+	mol = rdkit.Chem.MolFromSmiles(smiles)
+	found_aromatic = False
+	for ring in mol.GetRingInfo().AtomRings():
+		aromatic = all(
+			mol.GetAtomWithIdx(atom_ind).GetIsAromatic() for atom_ind in ring
+		)
+		if aromatic:
+			heteroaromatic = any(
+				mol.GetAtomWithIdx(atom_ind).GetAtomicNum() != 6 for atom_ind in ring
+			)
+			if heteroaromatic:
+				return 1
+			found_aromatic = True
+	if found_aromatic:
+		return 0
+	else:
+		return -1
+
+
 class ZINCDataset(torch.utils.data.Dataset):
 	def __init__(self, label_method=None, **label_kwargs):
 		"""
@@ -169,6 +215,10 @@ class ZINCDataset(torch.utils.data.Dataset):
 			label_func = label_aromaticity
 		elif label_method == "elements":
 			label_func = label_element_presence
+		elif label_method == "macrocyclicity":
+			label_func = label_macrocyclicity
+		elif label_method == "heteroaromaticity":
+			label_func = label_heteroaromaticity
 		elif label_method is None:
 			label_func = lambda s, **label_kwargs: 0
 		else:
