@@ -10,7 +10,9 @@ else:
 	DEVICE = "cpu"
 
 
-def run_forward_diffusion(inputs_by_class, diffuser, times, verbose=True):
+def run_forward_diffusion(
+	inputs_by_class, diffuser, times, verbose=True, store_on_gpu=True
+):
 	"""
 	Runs the forward diffusion process over many time points and
 	saves the result for each class.
@@ -22,16 +24,19 @@ def run_forward_diffusion(inputs_by_class, diffuser, times, verbose=True):
 			of the shape D
 		`times`: array of times to perform diffusion at, length T
 		`verbose`: whether or not to print out progress updates
+		`store_on_gpu`: if False, keep the final results on CPU
 	Returns a dictionary mapping class to T x B x D tensors.
 	"""
+	if store_on_gpu:
+		device = "cpu"
 	diffused_inputs_by_class = {}
 	for c, x0 in inputs_by_class.items():
 		if verbose:
 			print("Forward-diffusing class %s" % c)
-		result = torch.empty((len(times),) + x0.shape, device=DEVICE)
+		result = torch.empty((len(times),) + x0.shape, device=device)
 		for t_i, t in enumerate(times):
-			xt, score = diffuser.forward(x0, torch.full(x0.shape[:1], t).to(DEVICE))
-			result[t_i] = xt
+			xt, _ = diffuser.forward(x0, torch.full(x0.shape[:1], t).to(DEVICE))
+			result[t_i] = xt.to(device)
 		diffused_inputs_by_class[c] = result
 	
 	return diffused_inputs_by_class
@@ -58,10 +63,12 @@ def compute_time_similarities(diffused_inputs_by_class, times, verbose=True):
 		for i in range(len(classes)):
 			for j in range(i + 1):
 				inputs_1 = torch.flatten(
-					diffused_inputs_by_class[classes[i]][t_i], start_dim=1
+					diffused_inputs_by_class[classes[i]][t_i].to(DEVICE),
+					start_dim=1
 				)
 				inputs_2 = torch.flatten(
-					diffused_inputs_by_class[classes[j]][t_i], start_dim=1
+					diffused_inputs_by_class[classes[j]][t_i].to(DEVICE),
+					start_dim=1
 				)
 				
 				if i == j:
@@ -100,7 +107,8 @@ def compute_time_similarities(diffused_inputs_by_class, times, verbose=True):
 
 
 def compute_branch_points(
-	time_sim_matrix, times, sim_matrix_classes, smooth_sigma=3, epsilon=0.005
+	time_sim_matrix, times, sim_matrix_classes, smooth_sigma=3, epsilon=0.005,
+	min_branch_time=0, min_branch_length=0
 ):
 	"""
 	Given the output of `compute_time_similarities`, computes the proper branch
@@ -114,6 +122,8 @@ def compute_branch_points(
 		`smooth_sigma`: width of Gaussian filter to use to smooth each time
 			trajectory by
 		`epsilon`: error boundary for comparing similarities
+		`min_branch_time`: the earliest time possible for a branch point
+		`min_branch_length`: the shortest branch length allowed
 	Returns a list of branch points, where each branch point is a tuple of a
 	time, and tuples of the classes which diverge at that branch point.
 	"""
@@ -150,19 +160,19 @@ def compute_branch_points(
 	# Compute the branch points using disjoint sets
 	# From the earliest crossover time to the latest, iteratively merge classes
 	# until all classes are in the same set
-	def union(ds_arr, ds_sets, root_1, root_2):
+	def union(ds_arr, ds_vals, time, root_1, root_2):
 		if ds_arr[root_1] < ds_arr[root_2]:
 			# root_2 is larger
 			ds_arr[root_2] += ds_arr[root_1]  # Update size
 			ds_arr[root_1] = root_2  # root_2 is parent of root_1
-			ds_sets[root_2] = ds_sets[root_1] | ds_sets[root_2]
-			ds_sets[root_1] = None
+			ds_vals[root_2] = (ds_vals[root_1][0] | ds_vals[root_2][0], time)
+			ds_vals[root_1] = (None, time)
 		else:
 			# root_1 is larger or equal
 			ds_arr[root_1] += ds_arr[root_2]  # Update size
 			ds_arr[root_2] = root_1  # root_1 is parent of root_2
-			ds_sets[root_1] = ds_sets[root_1] | ds_sets[root_2]
-			ds_sets[root_2] = None
+			ds_vals[root_1] = (ds_vals[root_1][0] | ds_vals[root_2][0], time)
+			ds_vals[root_2] = (None, time)
 	
 	def find(ds_arr, x):
 		if ds_arr[x] < 0:
@@ -180,7 +190,8 @@ def compute_branch_points(
 		axis=1
 	)
 	ds_arr = np.full(time_sim_matrix.shape[1], -1)
-	ds_sets = [set([sim_matrix_classes[i]]) for i in range(len(ds_arr))]
+	ds_vals = [(set([sim_matrix_classes[i]]), 0) for i in range(len(ds_arr))]
+	# Value of each set is: (members of set, time point of root)
 	branch_points = []
 	for i, j in sorted_inds:
 		if i == j:
@@ -192,12 +203,18 @@ def compute_branch_points(
 			continue
 		
 		# Otherwise, merge together the sets containing i and j
+		time_i, time_j = ds_vals[root_i][1], ds_vals[root_j][1]
+		branch_time = max(
+			min_branch_time if time_i == 0 else time_i + min_branch_length,
+			min_branch_time if time_j == 0 else time_j + min_branch_length,
+			crossover_times[i, j]
+		)
 		branch_points.append((
-			crossover_times[i, j],
-			tuple(sorted(ds_sets[root_i])),
-			tuple(sorted(ds_sets[root_j]))
+			branch_time,
+			tuple(sorted(ds_vals[root_i][0])),
+			tuple(sorted(ds_vals[root_j][0]))
 		))
-		union(ds_arr, ds_sets, root_i, root_j)
+		union(ds_arr, ds_vals, branch_time, root_i, root_j)
 		
 		# If all classes are in the same set, stop
 		if np.sum(ds_arr < 0) == 1:
