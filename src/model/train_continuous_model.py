@@ -36,7 +36,7 @@ def config():
 def train_model(
 	model, sde, data_loader, model_type, class_mapper, num_epochs,
 	learning_rate, _run, loss_weighting_type="empirical_norm",
-	weight_func=None, t_limit=1
+	weight_func=None, t_limit=1, data_loader_returns_t_and_b=False
 ):
 	"""
 	Trains a diffusion model using the given instantiated model and SDE object.
@@ -62,6 +62,9 @@ def train_model(
 			for each predicted feature (in addition to any loss weighting
 			specified by `loss_weighting_type`)
 		`t_limit`: training will occur between time 0 and `t_limit`
+		`data_loader_returns_t_and_b`: if True, data loader returns the time
+			tensor and branch index along with data along with the data, instead
+			of the class label
 	"""
 	assert model_type in ("branched", "labelguided")
 
@@ -73,14 +76,22 @@ def train_model(
 	optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
 	for epoch_num in range(num_epochs):
+		if "on_epoch_start" in dir(data_loader.dataset):
+			data_loader.dataset.on_epoch_start()
+
 		batch_losses = []
 		t_iter = tqdm.tqdm(data_loader)
-		for x0, y in t_iter:
+		for batch in t_iter:
+			if data_loader_returns_t_and_b:
+				x0, t, branch_inds = batch
+				t = t.to(DEVICE).float()
+				branch_inds = branch_inds.to(DEVICE)
+			else:
+				x0, y = batch
+				# Sample random times from 0 to 1
+				t = (torch.rand(x0.shape[0]) * t_limit).to(DEVICE)
 			x0 = x0.to(DEVICE).float()
 			
-			# Sample random times from 0 to 1
-			t = (torch.rand(x0.shape[0]) * t_limit).to(DEVICE)
-	
 			# Run SDE forward to get xt and the true score at xt
 			xt, true_score = sde.forward(x0, t)
 			
@@ -111,7 +122,8 @@ def train_model(
 			# Compute loss
 			if model_type == "branched":
 				# Compute branch indices
-				branch_inds = class_mapper(y, t)
+				if not data_loader_returns_t_and_b:
+					branch_inds = class_mapper(y, t)
 				loss = model.loss(
 					pred_score, true_score, branch_inds, loss_weight
 				)
