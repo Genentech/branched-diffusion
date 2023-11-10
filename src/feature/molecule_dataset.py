@@ -11,7 +11,7 @@ else:
 	DEVICE = "cpu"
 
 
-ZINC250K_PATH = "/gstore/home/tsenga5/discrete_graph_diffusion/data/250k_rndm_zinc_drugs_clean_3.csv"
+ZINC250K_PATH = "/gstore/home/tsenga5/branched_diffusion/data/250k_rndm_zinc_drugs_clean_3.csv"
 
 
 def smiles_to_networkx(smiles, kekulize=True):
@@ -223,9 +223,10 @@ class ZINCDataset(torch.utils.data.Dataset):
 			label_func = lambda s, **label_kwargs: 0
 		else:
 			raise ValueError("Unknown label method: %s" % label_method)
-
+		
+		import tqdm
 		self.target = torch.tensor([
-			label_func(s, **label_kwargs) for s in self.all_smiles	
+			label_func(s, **label_kwargs) for s in tqdm.tqdm(self.all_smiles)
 		])
 
 		# Filter out things that didn't get a label
