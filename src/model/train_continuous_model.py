@@ -36,7 +36,8 @@ def config():
 def train_model(
 	model, sde, data_loader, model_type, class_mapper, num_epochs,
 	learning_rate, _run, loss_weighting_type="empirical_norm",
-	weight_func=None, t_limit=1, data_loader_returns_t_and_b=False
+	weight_func=None, t_limit=1, data_loader_returns_t_and_b=False,
+	grad_acc_step=1
 ):
 	"""
 	Trains a diffusion model using the given instantiated model and SDE object.
@@ -65,6 +66,8 @@ def train_model(
 		`data_loader_returns_t_and_b`: if True, data loader returns the time
 			tensor and branch index along with data along with the data, instead
 			of the class label
+		`grad_acc_step`: accumulate gradients this many batches before doing one
+			step of gradient descent
 	"""
 	assert model_type in ("branched", "labelguided")
 
@@ -81,7 +84,7 @@ def train_model(
 
 		batch_losses = []
 		t_iter = tqdm.tqdm(data_loader)
-		for batch in t_iter:
+		for batch_i, batch in enumerate(t_iter):
 			if data_loader_returns_t_and_b:
 				x0, t, branch_inds = batch
 				t = t.to(DEVICE).float()
@@ -135,10 +138,13 @@ def train_model(
 			if not np.isfinite(loss_val):
 				continue
 
-			optim.zero_grad()
 			loss.backward()
 			torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
-			optim.step()
+
+			if (batch_i + 1) % grad_acc_step == 0 or \
+				batch_i == (len(data_loader.dataset) - 1):
+				optim.step()
+				optim.zero_grad()
 			
 			batch_losses.append(loss_val)
 		
