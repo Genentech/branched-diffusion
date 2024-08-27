@@ -1,4 +1,4 @@
-# Hierarchically branched diffusion models for efficient and interpretable multi-class conditional generation
+# Hierarchically branched diffusion models leverage dataset structure for class-conditional generation
 
 <p align="center">
     <img src="references/thumbnail.png" width=400px />
@@ -8,11 +8,13 @@
 
 Diffusion models have achieved justifiable popularity by attaining state-of-the-art performance in generating realistic objects from seemingly arbitrarily complex data distributions, including when conditioning generation on labels.
 
-Unfortunately, however, their iterative nature renders them very computationally inefficient during the sampling process. For the multi-class conditional generation problem, we propose a novel, structurally unique framework of diffusion models which are hierarchically branched according to the inherent relationships between classes.
+Current class-conditional diffusion models, however, implicitly model the diffusion process on all classes in a flat fashion, ignoring any known relationships between classes. Class-labeled datasets, including those common in scientific domains, are rife with internal structure.
 
-Branched diffusion models offer major improvements in efficiently generating samples from multiple classes. We also showcase several other advantages of branched diffusion models, including ease of extension to novel classes in a continual-learning setting, and a unique interpretability that offers insight into these generative models. Branched diffusion models represent an alternative paradigm to their traditional linear counterparts, and can have large impacts in how we use diffusion models for efficient generation, online learning, and scientific discovery. 
+To take advantage of this structure, we propose hierarchically branched diffusion models as a novel framework for class-conditional generation. Branched diffusion models explicitly leverage the inherent relationships between distinct classes in the dataset to learn the underlying diffusion process in a hierarchical manner.
 
-See the [corresponding paper](https://arxiv.org/abs/2212.10777) for more information.
+Unlike their linear counterparts, branched diffusion models can be easily extended to novel data and classes in a continual-learning setting, they enable more sophisticated forms of conditional generation such as analogy-based conditional generation (i.e. transmutation), and they offer a novel interpretability into the diffusion process. Furthermore, they are more efficient than traditional diffusion models when sampling multiple classes.
+
+See the [corresponding paper](https://openreview.net/forum?id=sGTfxqRbei) for more information.
 
 This repository houses all of the code used to generate the results for the paper, including code that processes data, trains models, implements branched diffusion models, and generates all figures in the paper.
 
@@ -20,7 +22,7 @@ This repository houses all of the code used to generate the results for the pape
 
 If you found branched diffusion models to be helpful for your work, please cite the following:
 
-Tseng, A.M., Biancalani, T., Shen, M., Scalia, G. Hierarchically branched diffusion models for efficient and interpretable multi-class conditional generation. arXiv (2022) [Link](https://arxiv.org/abs/2212.10777)
+Tseng, A.M., Shen, M., Biancalani, T., Scalia, G. Hierarchically branched diffusion models leverage dataset structure for class-conditional generation. TMLR (2024) [Link](https://openreview.net/forum?id=sGTfxqRbei)
 
 [\[BibTeX\]](references/bibtex.bib)
 
