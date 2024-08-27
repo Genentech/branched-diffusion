@@ -472,8 +472,8 @@ class GraphJointNetwork(torch.nn.Module):
 		self, num_tasks, t_limit, max_feat_num=9, max_node_num=38, depth=2,
 		nhid=16, num_layers=6, num_linears=3, c_init=2, c_hid=8, c_final=4,
 		adim=16, num_heads=4, conv="GCN", time_embed_std=30, time_embed_size=256,
-		a_shared_layers=[True, True, True, False, False, False, False],
-		x_shared_layers=[True, False, False]
+		a_shared_layers=[True, True, True, True, True, False, False],
+		x_shared_layers=[True, True, False]
 	):
 		super().__init__()
 		
@@ -583,7 +583,8 @@ if __name__ == "__main__":
 	else:
 		DEVICE = "cpu"
 
-	model = GraphJointNetwork(num_tasks=3, t_limit=1).to(DEVICE)
+	model = GraphJointNetwork(num_tasks=1, t_limit=1).to(DEVICE)
+	print(sum(p.numel() for p in model.parameters()))
 	x = torch.ones((32, 38, 9), device=DEVICE)
 	adj = torch.ones((32, 38, 38), device=DEVICE)
 	task_inds = torch.randint(2, x.shape[:1])
